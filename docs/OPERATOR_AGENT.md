@@ -3,9 +3,10 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 2** — read-only foundation +
-> web console + the control gate engine in **shadow mode** (lease, gates,
-> approvals, e-stop, typed verbs). No live executor in this build.
+> so they can never drift.) **Status: Phase 3** — read-only foundation +
+> web console + control gate engine + a **live executor graduated per
+> action**. Live fires only when `mode: live` AND the action is promoted
+> in `config/local.yaml`; defaults stay shadow.
 
 ## 1. What the agent is
 
@@ -44,14 +45,30 @@ observing, arming/disarming recording, firing injections + calibration,
 C2 dump controls, fringe-stop table build/deploy, and (always
 human-approved) fleet code updates.
 
-**Phase 2 ships these in shadow mode only.** Each verb runs the full
-gauntlet — lease → e-stop → gate → approval → parameter validation — and
-then renders the exact etcd/dashboard writes it *would* make, audited as a
-dry run. There is **no live executor**: even with `mode: live` in the
-policy, this build cannot mutate observatory state (the engine is
-constructed without an executor). Console endpoints: `POST /api/control`
-(dry-run a verb), `GET /api/policy`, `GET/POST /api/lease[...]`,
-`GET/POST /api/approvals[...]`, `POST /api/pause`, `POST /api/resume`.
+Each verb runs the full gauntlet — lease → e-stop → gate → approval →
+parameter validation — and then either renders the exact writes it would
+make (shadow) or performs them (live). Console endpoints: `POST
+/api/control`, `GET /api/policy`, `GET/POST /api/lease[...]`, `GET/POST
+/api/approvals[...]`, `POST /api/pause`, `POST /api/resume`.
+
+**How live execution is reached (Phase 3).** The engine executes for real
+only when ALL of these hold: a live executor is wired (it is, by default,
+on the laptop), the policy is `mode: live`, AND the action is listed under
+`promote:` in `config/local.yaml`. Graduation is therefore strictly
+per-action and explicit. The shipped defaults (`mode: shadow`, no
+`local.yaml`) keep every path a dry run.
+
+**What the executor can touch.** It delegates to the observatory's own
+audited dashboard routes for almost everything — `start`/`stop`,
+`utc_start`/`utc_stop`, `dumps_enabled`, `dump_now`, `inject`,
+`inject_calibrate`, `fstables/build`/`deploy`, `spectral_line`,
+`bounce_search`, `delete_snr_cal`, `update_dsart` — reusing their
+ARM_SEQ/ssh/UDP/rsync/K-calibration logic. The **only** etcd control key
+it writes directly is `/cmd/ant/<n>` (antenna elevation for pointing),
+allow-listed in the executor. It never runs a raw shell, never writes an
+arbitrary etcd key, and cannot edit its own policy (`set_policy` is a
+manual, two-person, by-hand action). The e-stop (`paused`) blocks even
+promoted, live actions.
 
 ### Web console (Phase 1)
 A Flask app on the laptop, behind **Google SSO**. Every authenticated user
@@ -120,11 +137,19 @@ breaches. Cadences/thresholds are configured alongside the monitor loop.
 ## 8. Roadmap
 
 Phase 0 read-only foundation → 1 web + SSO + multi-user → **2 lease +
-policy engine + shadow mode (done)** → 3 graduated live control (the live
-executor, wired per-action behind these gates) → 4 pointing + observing
-plan → 5 autonomy + monitor/recovery. See the team chat design for detail.
+policy engine + shadow mode (done)** → **3 graduated live control + live
+executor (done)** → 4 pointing helpers + conversational observing plan →
+5 autonomy + monitor/recovery loops. See the team chat design for detail.
 
-Promotion to live (Phase 3) is per-action: list a validated action under
-`promote:` in `config/local.yaml` to move it from its `commissioning` gate
-to its `target` gate, and supply the live executor. Until then every
-control path is exercised end-to-end without touching the array.
+Promotion to live is per-action: list a validated action under `promote:`
+in `config/local.yaml` to move it from its `commissioning` gate to its
+`target` gate and enable real execution for it. Until then every control
+path is exercised end-to-end without touching the array.
+
+**dsa110-rt:** Phase 3 required **no** dsa110-rt changes — the executor
+reuses the existing `dsa_monitor` `/control/` routes and the `/cmd/ant`
+etcd convention. The one open integration item (a read-only operator-lease
+panel on the dsa110-rt dashboard so humans see who holds operator control,
+and optionally making the dashboard's control routes lease-aware) is left
+for a dedicated dsa110-rt branch, to avoid colliding with concurrent work
+there.

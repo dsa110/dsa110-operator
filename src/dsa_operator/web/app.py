@@ -43,21 +43,38 @@ ToolsFactory = Callable[[str], ReadOnlyTools]
 
 
 def _default_control_engine(audit: AuditLog) -> ControlEngine:
-    """Build a real control engine over the forwarded etcd write path.
+    """Build the real control engine over the forwarded etcd + dashboard.
 
-    Note: there is no live executor here, so the engine is shadow-only by
-    construction (it cannot mutate observatory state).
+    A live executor IS wired here, but the engine fires it only when the
+    policy is ``mode: live`` AND the specific action is promoted in
+    ``config/local.yaml`` (see ``ControlEngine._should_execute_live``). With
+    the shipped defaults (shadow, nothing promoted) every control path is a
+    dry run — the live executor stays dormant.
     """
     from dsa_operator.audit.etcd_sink import EtcdAuditSink
+    from dsa_operator.control.executors import (
+        ControlEtcdWriter,
+        DashboardControlClient,
+        LiveExecutor,
+    )
+    from dsa_operator.etcd.read import connect_readonly
     from dsa_operator.etcd.write import connect_writer
 
-    writer = connect_writer(port=int(os.environ.get("DSA_OPERATOR_ETCD_PORT",
-                                                     DEFAULT_LOCAL_ETCD_PORT)))
+    etcd_port = int(os.environ.get("DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT))
+    dash_port = int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT",
+                                   DEFAULT_LOCAL_DASHBOARD_PORT))
+    writer = connect_writer(port=etcd_port)
     # Mirror audit rows into etcd's /operator/audit trail too.
     audit._etcd_sink = audit._etcd_sink or EtcdAuditSink(writer)  # type: ignore[attr-defined]
+
+    executor = LiveExecutor(
+        dashboard=DashboardControlClient(port=dash_port),
+        control_etcd=ControlEtcdWriter("127.0.0.1", etcd_port),
+        read_etcd=connect_readonly(port=etcd_port),
+    )
     return ControlEngine(
         load_policy(), ExecutorLease(writer), ApprovalStore(), audit,
-        writer=writer, live_executor=None,
+        writer=writer, live_executor=executor,
     )
 
 

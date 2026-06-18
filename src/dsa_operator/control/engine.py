@@ -188,15 +188,21 @@ class ControlEngine:
             return self._deny(action, actor, "invalid_params", str(exc),
                               params, gate=gate)
 
-        # 6. execute or shadow
-        live = (self.policy.mode == "live" and self._live is not None)
-        if live:                                            # pragma: no cover
+        # 6. execute or shadow.  Live requires ALL of: an injected executor,
+        #    policy mode=live, AND this action explicitly promoted. So the
+        #    safe default (no executor / shadow / nothing promoted) can never
+        #    mutate state, and graduation is strictly per-action.
+        if self._should_execute_live(action):
             return self._execute_live(action, actor, params, gate, plan,
                                       approval_used)
 
         note = "dry run (shadow)"
         if self.policy.mode == "live" and self._live is None:
             note = "policy mode=live but no live executor in this build; shadow only"
+        elif self.policy.mode == "live" and action not in self.policy.promoted:
+            note = f"policy mode=live but {action!r} is not promoted; shadow only"
+        elif self.policy.mode != "live":
+            note = "policy mode=shadow; dry run"
         self.audit.record(AuditRecord(
             action=action, kind="control", actor=actor, ok=True, mode="shadow",
             params=params, result={"plan": plan.summary,
@@ -237,11 +243,29 @@ class ControlEngine:
             extra={"required_approvers": n, "two_person": two},
         )
 
+    def _should_execute_live(self, action: str) -> bool:
+        return (
+            self._live is not None
+            and self.policy.mode == "live"
+            and action in self.policy.promoted
+        )
+
     def _execute_live(self, action, actor, params, gate, plan,
-                      approval_used) -> Decision:            # pragma: no cover
-        # Phase 3: hand `plan` to the live executor. Intentionally unreachable
-        # in this build (constructed only when live_executor is not None).
-        result = self._live.execute(plan)
+                      approval_used) -> Decision:
+        # Hand the plan to the live executor. Reached only when the action is
+        # promoted AND mode=live AND an executor is wired (see
+        # _should_execute_live). On failure we audit and surface the error
+        # rather than pretend success.
+        try:
+            result = self._live.execute(plan, actor=actor)
+        except Exception as exc:                            # noqa: BLE001
+            self.audit.record(AuditRecord(
+                action=action, kind="control", actor=actor, ok=False,
+                mode="live", params=params, note=f"execute failed: {exc}",
+            ))
+            return Decision(Outcome.DENIED, action, actor, gate=gate,
+                            mode="live", reason=f"execution failed: {exc}",
+                            plan=plan.to_json())
         self.audit.record(AuditRecord(
             action=action, kind="control", actor=actor, ok=True, mode="live",
             params=params, result={"plan": plan.summary}, note="executed",

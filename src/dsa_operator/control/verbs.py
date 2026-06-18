@@ -15,6 +15,7 @@ they are promoted to live.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -100,98 +101,175 @@ def _plan_point_array(params: dict[str, Any], policy: Policy) -> Plan:
         raise VerbError(
             f"dec={dec:.3f} deg -> el={el:.3f} deg is outside the allowed "
             f"[{el_min}, {el_max}] envelope")
+    payload: dict[str, Any] = {"cmd": "move", "val": round(el, 4)}
+    refants = params.get("refants")
+    if isinstance(refants, (list, tuple)):
+        payload["refants"] = [int(x) for x in refants]
     steps = [Step(
         kind="etcd_put",
-        target="/cmd/ant/<all>",
-        payload={"cmd": "move", "val": round(el, 4)},
-        note=f"broadcast move to el={el:.3f} deg across ~{N_ANTS_HINT} antennas; "
-             f"then poll /mon/ant/<n>.drv_state until settled",
+        target="/cmd/ant/<all>",     # executor expands to /cnf/corr antenna_order
+        payload=payload,
+        note=f"put_dict /cmd/ant/<n> {{'cmd':'move','val':{el:.4f}}} per antenna; "
+             f"then poll /mon/ant/<n>.drv_state==2 until settled",
     )]
     return Plan("point_array", steps,
                 f"Slew array to dec={dec:.3f} deg (el={el:.3f} deg).")
 
 
 def _plan_fire_injection(params: dict[str, Any], policy: Policy) -> Plan:
-    snr = float(params.get("snr", 0) or 0)
-    dm = float(params.get("dm", 0) or 0)
-    payload = {k: params[k] for k in ("snr", "dm", "width_ms", "apply_at_specnum")
-               if k in params}
-    steps = [Step(
-        kind="etcd_put",
-        target="/cnf/inject/active/<id>",
-        payload=payload or {"note": "default injection params"},
-        note="register a synthetic FRB for corr_fast to inject; "
-             "auto-expires after the apply window",
-    )]
-    return Plan("fire_injection", steps,
-                f"Fire injection (snr={snr or '?'}, dm={dm or '?'}).")
+    # Delegated to the dashboard /control/inject route, which validates the
+    # payload, computes apply_at_specnum, fans out to /cmd/dsart/corr/<cg>/
+    # inject, and publishes the /cnf/inject/active registry.
+    form: dict[str, Any] = {}
+    for k in ("dm_pc_cm3", "l_rad", "m_rad", "width_samples", "fluence_jy_ms",
+              "target_snr", "profile", "chgroups", "margin_blocks"):
+        if k in params:
+            form[k] = params[k]
+    snr = form.get("target_snr")
+    dm = form.get("dm_pc_cm3")
+    return Plan("fire_injection", [Step(
+        kind="dashboard_post", target="/control/inject", payload=form,
+        note="synthetic FRB; dashboard computes apply_at_specnum + registry")],
+        f"Fire injection (target_snr={snr or '?'}, dm={dm or '?'}).")
 
 
 def _plan_set_dumps_enabled(params: dict[str, Any], policy: Policy) -> Plan:
     enabled = _req_bool(params, "enabled")
     return Plan("set_dumps_enabled", [Step(
-        kind="dashboard_post", target="/control/set_dumps_enabled",
-        payload={"enabled": enabled}, unverified=True,
-        note="toggle C2 cube dumping")],
+        kind="dashboard_post", target="/control/dumps_enabled",
+        payload={"enabled": "true" if enabled else "false",
+                 "confirm": "enable" if enabled else "suppress",
+                 "reason": str(params.get("reason", "operator"))},
+        note="etcd /cmd/c2/dumps_enabled via dashboard (audited)")],
         f"Set C2 dumps enabled = {enabled}.")
 
 
 def _plan_dump_now(params: dict[str, Any], policy: Policy) -> Plan:
     return Plan("dump_now", [Step(
-        kind="dashboard_post", target="/control/dump_now", payload={},
-        unverified=True, note="force an immediate manual cube dump")],
+        kind="dashboard_post", target="/control/dump_now",
+        payload={"confirm": "dump_now"},
+        note="UDP C2 trigger to the search halves")],
         "Trigger a manual dump_now.")
 
 
-def _simple_dashboard(action: str, path: str, summary: str) -> Callable:
-    def build(params: dict[str, Any], policy: Policy) -> Plan:
-        return Plan(action, [Step(
-            kind="dashboard_post", target=path, payload=dict(params or {}),
-            unverified=True)], summary)
-    return build
+def _plan_inject_calibrate(params: dict[str, Any], policy: Policy) -> Plan:
+    form = {k: params[k] for k in (
+        "dm_pc_cm3", "l_rad", "m_rad", "width_samples", "fluence_jy_ms",
+        "profile", "chgroups", "use_ladder", "fluence_ladder", "health_check",
+    ) if k in params}
+    return Plan("inject_calibrate", [Step(
+        kind="dashboard_post", target="/control/inject_calibrate", payload=form,
+        note="fire + poll match; store K at /cnf/inject/snr_calibration")],
+        "Run a calibration injection.")
+
+
+def _plan_utc_start(params: dict[str, Any], policy: Policy) -> Plan:
+    margin = int(params.get("margin", 30000))
+    return Plan("utc_start", [Step(
+        kind="dashboard_post", target="/control/utc_start",
+        payload={"margin": margin},
+        note="dashboard computes ARM_SEQ from capture last_seq_no")],
+        f"Arm recording (utc_start, margin={margin}).")
+
+
+def _plan_utc_stop(params: dict[str, Any], policy: Policy) -> Plan:
+    return Plan("utc_stop", [Step(
+        kind="dashboard_post", target="/control/utc_stop", payload={})],
+        "Disarm recording (utc_stop).")
+
+
+def _plan_start_fleet(params: dict[str, Any], policy: Policy) -> Plan:
+    form: dict[str, Any] = {}
+    if "dec_deg" in params:
+        form["obs_dec_deg"] = float(params["dec_deg"])
+    return Plan("start_fleet", [Step(
+        kind="dashboard_post", target="/control/start", payload=form,
+        note="ssh cleanup + etcd start on /cmd/corr_rt/0 and search fanout")],
+        "Start the pipeline fleet.")
+
+
+def _plan_stop_fleet(params: dict[str, Any], policy: Policy) -> Plan:
+    return Plan("stop_fleet", [Step(
+        kind="dashboard_post", target="/control/stop",
+        payload={"confirm": "stop"},
+        note="etcd stop on /cmd/corr_rt/0 + fanout")],
+        "Stop the pipeline fleet.")
+
+
+def _plan_bounce_search(params: dict[str, Any], policy: Policy) -> Plan:
+    form: dict[str, Any] = {"confirm": "bounce_search"}
+    if "cn_ids" in params:
+        form["cn_ids"] = params["cn_ids"]
+    return Plan("bounce_search", [Step(
+        kind="dashboard_post", target="/control/bounce_search", payload=form,
+        note="search fanout stop -> sleep -> start on /cmd/search_rt/<cn>")],
+        "Bounce search node(s).")
 
 
 def _plan_build_fstable(params: dict[str, Any], policy: Policy) -> Plan:
-    dec = params.get("dec_deg")
+    dec = _req_float(params, "dec_deg")
+    form: dict[str, Any] = {"dec_deg": dec}
+    if params.get("force"):
+        form["force"] = "true"
     return Plan("build_fstable", [Step(
-        kind="dashboard_post", target="/control/fstable/build",
-        payload={"dec_deg": dec}, unverified=True,
-        note="build the fringe-stopping table in casa38 on h23")],
-        f"Build fstable for dec={dec}.")
+        kind="dashboard_post", target="/control/fstables/build", payload=form,
+        note="subprocess build_fstable_cache.py in casa38 on h23")],
+        f"Build fstable for dec={dec:.4f}.")
 
 
 def _plan_deploy_fstable(params: dict[str, Any], policy: Policy) -> Plan:
-    dec = params.get("dec_deg")
+    fn = params.get("filename")
+    if not fn or "/" in str(fn):
+        raise VerbError("deploy_fstable requires a bare 'filename' (.npz basename)")
     return Plan("deploy_fstable", [Step(
-        kind="dashboard_post", target="/control/fstable/deploy",
-        payload={"dec_deg": dec}, unverified=True,
+        kind="dashboard_post", target="/control/fstables/deploy",
+        payload={"filename": str(fn)},
         note="rsync the fstable to the corr nodes")],
-        f"Deploy fstable for dec={dec} to corr nodes.")
+        f"Deploy fstable {fn} to corr nodes.")
 
 
 def _plan_set_spectral_line(params: dict[str, Any], policy: Policy) -> Plan:
+    subbands = params.get("subbands")
+    if subbands is None:
+        raise VerbError("set_spectral_line requires 'subbands'")
+    if not isinstance(subbands, str):
+        subbands = json.dumps(subbands)
     return Plan("set_spectral_line", [Step(
-        kind="dashboard_post", target="/control/set_spectral_line",
-        payload=dict(params or {}), unverified=True,
-        note="takes effect at the next fleet start")],
+        kind="dashboard_post", target="/control/spectral_line",
+        payload={"subbands": subbands, "confirm": "spectral_line",
+                 "reason": str(params.get("reason", "operator"))},
+        note="etcd /cnf/spectral_line; takes effect at next fleet start")],
         "Set spectral-line mode (next fleet start).")
 
 
+def _plan_delete_snr_cal(params: dict[str, Any], policy: Policy) -> Plan:
+    return Plan("delete_snr_cal", [Step(
+        kind="dashboard_post", target="/control/delete_snr_cal",
+        payload={"confirm": "delete_snr_cal"},
+        note="etcd delete-prefix /cnf/inject/snr_calibration/*")],
+        "Delete the SNR calibration.")
+
+
 def _plan_update_fleet_code(params: dict[str, Any], policy: Policy) -> Plan:
-    ref = params.get("ref", "origin/main")
+    form: dict[str, Any] = {"confirm": "update_dsart"}
+    for k in ("branch", "hosts"):
+        if k in params:
+            form[k] = params[k]
     return Plan("update_fleet_code", [Step(
-        kind="ssh", target="fleet: git fetch && git checkout",
-        payload={"ref": ref}, unverified=True,
-        note="ALWAYS human-approved; pull/checkout across the fleet")],
-        f"Update fleet code to {ref}.")
+        kind="dashboard_post", target="/control/update_dsart", payload=form,
+        note="ALWAYS human-approved; ssh git fanout across the fleet")],
+        f"Update fleet code (branch={form.get('branch', 'default')}).")
 
 
 def _plan_set_policy(params: dict[str, Any], policy: Policy) -> Plan:
+    # Editing the operator's own capability policy is a LOCAL, two-person
+    # action; the live executor deliberately cannot perform it (it has no
+    # such step kind), so it must be done by hand even if promoted.
     return Plan("set_policy", [Step(
-        kind="ssh", target="edit config/policy.yaml",
-        payload=dict(params or {}), unverified=True,
-        note="two-person; edits the capability policy itself")],
-        "Edit the operator capability policy (two-person).")
+        kind="local_policy_edit", target="config/policy.yaml",
+        payload=dict(params or {}),
+        note="two-person; performed by hand — not by the live executor")],
+        "Edit the operator capability policy (two-person, manual).")
 
 
 # -- registry ---------------------------------------------------------------
@@ -208,25 +286,18 @@ class Verb:
 _BUILDERS: dict[str, Callable[[dict[str, Any], Policy], Plan]] = {
     "point_array": _plan_point_array,
     "fire_injection": _plan_fire_injection,
-    "inject_calibrate": _simple_dashboard(
-        "inject_calibrate", "/control/inject_calibrate", "Run a calibration injection."),
-    "utc_start": _simple_dashboard(
-        "utc_start", "/control/utc_start", "Arm recording (ARM_SEQ)."),
-    "utc_stop": _simple_dashboard(
-        "utc_stop", "/control/utc_stop", "Disarm recording."),
+    "inject_calibrate": _plan_inject_calibrate,
+    "utc_start": _plan_utc_start,
+    "utc_stop": _plan_utc_stop,
     "set_dumps_enabled": _plan_set_dumps_enabled,
     "dump_now": _plan_dump_now,
-    "start_fleet": _simple_dashboard(
-        "start_fleet", "/control/start_fleet", "Start the pipeline fleet."),
-    "stop_fleet": _simple_dashboard(
-        "stop_fleet", "/control/stop_fleet", "Stop the pipeline fleet."),
-    "bounce_search": _simple_dashboard(
-        "bounce_search", "/control/bounce_search", "Bounce a search node."),
+    "start_fleet": _plan_start_fleet,
+    "stop_fleet": _plan_stop_fleet,
+    "bounce_search": _plan_bounce_search,
     "build_fstable": _plan_build_fstable,
     "deploy_fstable": _plan_deploy_fstable,
     "set_spectral_line": _plan_set_spectral_line,
-    "delete_snr_cal": _simple_dashboard(
-        "delete_snr_cal", "/control/delete_snr_cal", "Delete the SNR calibration."),
+    "delete_snr_cal": _plan_delete_snr_cal,
     "update_fleet_code": _plan_update_fleet_code,
     "set_policy": _plan_set_policy,
 }

@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from dsa_operator.control.approvals import Approval, ApprovalStore
 from dsa_operator.control.engine import ControlEngine, Decision, Outcome
+from dsa_operator.control.executors import (
+    ControlEtcdWriter,
+    DashboardControlClient,
+    ExecutorError,
+    LiveExecutor,
+)
 from dsa_operator.control.lease import ExecutorLease, LeaseHolder
 
 __all__ = [
@@ -21,4 +27,8 @@ __all__ = [
     "ControlEngine",
     "Decision",
     "Outcome",
+    "LiveExecutor",
+    "ControlEtcdWriter",
+    "DashboardControlClient",
+    "ExecutorError",
 ]
