@@ -10,6 +10,12 @@ lease + gate + approval checks proven here.
 from __future__ import annotations
 
 from dsa_operator.control.approvals import Approval, ApprovalStore
+from dsa_operator.control.authority import (
+    Authority,
+    ObservationStatus,
+    observation_status,
+    read_authority,
+)
 from dsa_operator.control.engine import ControlEngine, Decision, Outcome
 from dsa_operator.control.executors import (
     ControlEtcdWriter,
@@ -31,4 +37,8 @@ __all__ = [
     "ControlEtcdWriter",
     "DashboardControlClient",
     "ExecutorError",
+    "Authority",
+    "read_authority",
+    "ObservationStatus",
+    "observation_status",
 ]

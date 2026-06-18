@@ -26,6 +26,18 @@ logged.
 > the only control key written directly is `/cmd/ant/<n>`. See
 > `docs/OPERATOR_AGENT.md`.
 
+## Human authority & the API key
+
+* **Dashboard lockout / executor pin / time cap.** Humans control the agent
+  from the dsa110-rt dashboard via a single etcd key `/cmd/operator/control`
+  (`agents_enabled`, `executor_email`, `max_obs_seconds`). It lives outside
+  every prefix the operator can write, so the agent can never re-enable
+  itself, re-point the executor, or extend its own time limit.
+* **One key, many users.** The single server process holds one Anthropic
+  key; monitoring users sign in over Google SSO and never receive a key.
+  Provision it via `ANTHROPIC_API_KEY` or a git-ignored secrets file (see
+  `.env.example`); nothing secret is logged or committed.
+
 ## What this is NOT allowed to touch
 
 * No host other than `h23` (single SSH hop; etcd + dashboard are reached

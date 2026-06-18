@@ -148,6 +148,38 @@ breaches. Cadences/thresholds are configured alongside the monitor loop.
 | Buffers fill on start | stale `replay_voltage_dump` holding a buffer | kill stale process on the corr node |
 | Injections not detected | warm-up not converged / wrong apply-at | check noise EMA convergence; verify `apply_at_specnum` |
 
+## 6b. Human authority from the dsa110-rt dashboard
+
+Humans hold a one-way override the agent **cannot** countermand, asserted
+through a single etcd key, `/cmd/operator/control`, written only from the
+dsa110-rt dashboard. That key sits outside every prefix the operator can
+write (`/operator/` and `/cmd/ant/`), so the agent can read it but never
+enable itself, re-point the executor, or extend its own time limit.
+
+| Field | Effect |
+| --- | --- |
+| `agents_enabled: false` | **Lockout.** Every agent control attempt fails closed (reads/Q&A continue). |
+| `executor_email: <addr>` | **Pin who's in charge.** Only that Google identity may hold the lease and act; unset ⇒ operator self-arbitrates. |
+| `max_obs_seconds: <n>` | **Hard observation cap.** The watchdog (and, ideally, a dsart-side watchdog) stops recording after this long. |
+
+Operator side (this build): `GET /api/authority` shows the asserted
+authority; `GET /api/observation` shows armed/elapsed/overrun vs the cap;
+lease acquisition and every control attempt honour the lockout and pin. A
+**truly strict** time limit also wants a watchdog inside `dsart_rt`'s
+`utc_start` handler that auto-`utc_stop`s after `max_obs_seconds`
+regardless of the agent — that part lands on a dsa110-rt branch.
+
+## 6c. The Claude account / API key
+
+The brain is one server process holding **one** Anthropic API key.
+Monitoring users never receive a key: they sign in to the single console
+via Google SSO, and that process makes the Anthropic calls. Provision the
+key out-of-band into the server's environment (`ANTHROPIC_API_KEY`), or a
+git-ignored `~/.config/dsa110-operator/secrets.env` / repo `.env` (see
+`.env.example`). Prefer a dedicated Anthropic workspace key with a spend
+cap. Nothing secret is logged or committed; without a key the console
+falls back to the stub agent.
+
 ## 7. Control protocol
 
 * **Lease / takeover:** the executor holds a short-TTL etcd lease; others
@@ -156,7 +188,9 @@ breaches. Cadences/thresholds are configured alongside the monitor loop.
   granted by an authorized human, expire after `approval.ttl_seconds`.
 * **Logging:** every action → append-only local JSONL (system of record)
   + the shared etcd `/mon/audit/...` trail + a Slack summary.
-* **E-stop:** set `paused: true` (console/CLI) to halt all control.
+* **E-stop:** set `paused: true` (console/CLI) to halt all control — this
+  is the operator's *own* stop. The dashboard `agents_enabled: false`
+  lockout is the stronger, human-only override the agent cannot clear.
 
 ## 8. Roadmap
 

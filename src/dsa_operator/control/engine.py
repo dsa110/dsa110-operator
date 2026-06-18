@@ -28,6 +28,11 @@ from typing import Any, Optional
 
 from dsa_operator.audit.log import AuditLog, AuditRecord
 from dsa_operator.control.approvals import ApprovalStore
+from dsa_operator.control.authority import (
+    Authority,
+    observation_status,
+    read_authority,
+)
 from dsa_operator.control.lease import ExecutorLease
 from dsa_operator.policy import (
     GATE_APPROVAL,
@@ -93,6 +98,7 @@ class ControlEngine:
         audit: AuditLog,
         *,
         writer: Optional[Any] = None,     # OperatorEtcdWriter, for the pause key
+        read_etcd: Optional[Any] = None,  # ReadOnlyEtcd, for the dashboard authority key
         live_executor: Optional[Any] = None,
         now=time.time,
     ) -> None:
@@ -101,8 +107,18 @@ class ControlEngine:
         self.approvals = approvals
         self.audit = audit
         self._writer = writer
+        self._read = read_etcd
         self._live = live_executor        # None ⇒ live impossible in this build
         self._now = now
+
+    # -- dashboard authority (human override the agent cannot clear) ----------
+    def authority(self) -> Authority:
+        return read_authority(self._read)
+
+    def observation_status(self):
+        """Live recording status vs the dashboard's max_obs_seconds cap."""
+        return observation_status(self._read, self.authority().max_obs_seconds,
+                                  self._now())
 
     # -- e-stop ---------------------------------------------------------------
     def is_paused(self) -> bool:
@@ -155,6 +171,13 @@ class ControlEngine:
             return self._deny(action, actor, "paused",
                               "system is paused (e-stop engaged)", params)
 
+        # 2b. dashboard lockout (human authority the agent cannot clear)
+        auth = self.authority()
+        if not auth.agents_enabled:
+            return self._deny(action, actor, "locked_out",
+                              "agent control is locked out from the dashboard",
+                              params)
+
         # 3. executor lease?
         holder = self.lease.holder()
         if holder is None or holder.session_id != session_id:
@@ -162,6 +185,13 @@ class ControlEngine:
                            "you do not hold the executor lease", params)
             d.holder = holder.to_json() if holder else None
             return d
+
+        # 3b. dashboard-pinned executor (if set, only that user may act)
+        if auth.executor_email and holder.actor != auth.executor_email:
+            return self._deny(
+                action, actor, "executor_pinned",
+                f"the dashboard has pinned the executor to {auth.executor_email}",
+                params)
 
         gate = self.policy.gate_for(action)
 

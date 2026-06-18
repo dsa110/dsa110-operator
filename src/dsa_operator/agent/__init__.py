@@ -23,10 +23,15 @@ __all__ = ["Agent", "AgentResponse", "ToolCall", "StubAgent", "build_default_age
 
 def build_default_agent() -> Agent:
     """Return :class:`ClaudeAgent` if the SDK + API key are available,
-    else the deterministic :class:`StubAgent`."""
-    import os
+    else the deterministic :class:`StubAgent`.
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    Loads secrets first (env or a git-ignored local file), so the single
+    Anthropic key the server holds is picked up without ever being in git.
+    """
+    from dsa_operator.env import have_anthropic_key, load_secrets
+
+    load_secrets()
+    if have_anthropic_key():
         try:
             from dsa_operator.agent.claude import ClaudeAgent
 

@@ -28,8 +28,19 @@ _UNIX_EPOCH_JD = 2440587.5
 _J2000_JD = 2451545.0
 
 
+_MJD_UNIX_EPOCH = 40587.0   # MJD of 1970-01-01T00:00:00Z
+
+
 def jd_from_unix(unix_ts: float) -> float:
     return unix_ts / 86400.0 + _UNIX_EPOCH_JD
+
+
+def mjd_to_unix(mjd: float) -> float:
+    return (float(mjd) - _MJD_UNIX_EPOCH) * 86400.0
+
+
+def unix_to_mjd(unix_ts: float) -> float:
+    return float(unix_ts) / 86400.0 + _MJD_UNIX_EPOCH
 
 
 def gmst_deg(unix_ts: float) -> float:
@@ -118,6 +129,7 @@ def observability(dec_deg: float, *, ra_deg: Optional[float] = None,
 
 __all__ = [
     "OVRO_LON_DEG", "OVRO_LAT_DEG",
-    "jd_from_unix", "gmst_deg", "lst_deg", "next_transit_unix",
+    "jd_from_unix", "mjd_to_unix", "unix_to_mjd",
+    "gmst_deg", "lst_deg", "next_transit_unix",
     "dec_to_el", "el_to_dec", "is_observable", "observability", "Observability",
 ]

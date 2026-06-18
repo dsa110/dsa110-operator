@@ -71,14 +71,15 @@ def _default_control_engine(audit: AuditLog) -> ControlEngine:
     # Mirror audit rows into etcd's /operator/audit trail too.
     audit._etcd_sink = audit._etcd_sink or EtcdAuditSink(writer)  # type: ignore[attr-defined]
 
+    read = connect_readonly(port=etcd_port)
     executor = LiveExecutor(
         dashboard=DashboardControlClient(port=dash_port),
         control_etcd=ControlEtcdWriter("127.0.0.1", etcd_port),
-        read_etcd=connect_readonly(port=etcd_port),
+        read_etcd=read,
     )
     return ControlEngine(
         load_policy(), ExecutorLease(writer), ApprovalStore(), audit,
-        writer=writer, live_executor=executor,
+        writer=writer, read_etcd=read, live_executor=executor,
     )
 
 
@@ -294,6 +295,18 @@ def create_app(
             "pointing": pol.pointing, "promoted": sorted(pol.promoted),
         }})
 
+    @app.route("/api/authority")
+    def api_authority():
+        """What the dsa110-rt dashboard is asserting over the agent."""
+        require_user()
+        return jsonify({"ok": True, "data": control.authority().to_json()})
+
+    @app.route("/api/observation")
+    def api_observation():
+        """Live recording status vs the dashboard's max_obs_seconds cap."""
+        require_user()
+        return jsonify({"ok": True, "data": control.observation_status().to_json()})
+
     @app.route("/api/lease")
     def api_lease():
         require_user()
@@ -306,6 +319,14 @@ def create_app(
     @app.route("/api/lease/acquire", methods=["POST"])
     def api_lease_acquire():
         user = require_user()
+        auth = control.authority()
+        if not auth.agents_enabled:
+            return jsonify({"ok": False,
+                            "error": "agent control is locked out from the dashboard"}), 403
+        if auth.executor_email and user != auth.executor_email:
+            return jsonify({"ok": False,
+                            "error": f"the dashboard has pinned the executor to "
+                                     f"{auth.executor_email}"}), 403
         ok = control.lease.acquire(user, current_sid())
         audit.record(AuditRecord(action="lease_acquire", kind="control",
                                  actor=user, ok=ok, mode="live"))
@@ -498,6 +519,8 @@ def create_app(
 
 def main() -> int:  # pragma: no cover
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from dsa_operator.env import load_secrets
+    load_secrets()
     app = create_app()
     host = os.environ.get("DSA_OPERATOR_BIND", "127.0.0.1")
     port = int(os.environ.get("DSA_OPERATOR_PORT", "8787"))
