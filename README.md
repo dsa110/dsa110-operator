@@ -15,11 +15,15 @@ an etcd lease. Risky/irreversible actions are gated by a human-readable,
 machine-enforced **policy** (`config/policy.yaml`), and **everything** is
 logged.
 
-> **Status: Phase 1.** Read-only foundation + an authenticated,
-> multi-user **web console** (Flask + Google SSO) with an assistant chat
-> over the read-only tools. There is still **no control surface**;
-> mutating tools arrive (in shadow mode first) in later phases. See
-> `docs/OPERATOR_AGENT.md` for the capability roadmap.
+> **Status: Phase 2.** Read-only foundation + authenticated multi-user
+> web console + the **control gate engine in shadow mode**: a
+> single-executor etcd lease, the policy gate engine (autonomous /
+> approval / forbidden, two-person, commissioning→target promotion),
+> human approvals, an e-stop, and typed control verbs that render the
+> exact etcd/dashboard writes they *would* make. **There is no live
+> executor in this build**, so nothing here can move the array; live
+> execution is wired in Phase 3 behind these same gates. See
+> `docs/OPERATOR_AGENT.md`.
 
 ## What this is NOT allowed to touch
 
@@ -39,6 +43,7 @@ logged.
 | `src/dsa_operator/tools/` | Typed tool surface the agent is allowed to call. |
 | `src/dsa_operator/audit/` | Append-only local log + etcd audit + Slack notify. |
 | `src/dsa_operator/agent/` | The Claude brain + deterministic stub fallback (read-only tools). |
+| `src/dsa_operator/control/` | Single-executor lease, policy gate engine, approvals, typed verbs (shadow-only). |
 | `src/dsa_operator/monitor/` | (later) local, non-LLM health/injection/recovery loops. |
 | `src/dsa_operator/web/` | Flask console + Google SSO + assistant chat (read-only). |
 | `config/policy.yaml` | Capability document as code (the approval gates). |

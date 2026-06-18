@@ -1,0 +1,13 @@
+# config/local.yaml  (optional, git-ignored) — site-local overrides.
+#
+# `promote` graduates an action from its conservative `commissioning` gate
+# to its steady-state `target` gate (see config/policy.yaml). An action is
+# promoted only after it has been validated live; promotion is audited.
+#
+# Copy to config/local.yaml and edit. With no file present, every action
+# uses its commissioning gate (the safe default).
+
+promote: []
+  # - fire_injection
+  # - build_fstable
+  # - point_array

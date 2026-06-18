@@ -30,12 +30,35 @@ from dsa_operator import DEFAULT_LOCAL_DASHBOARD_PORT, DEFAULT_LOCAL_ETCD_PORT
 from dsa_operator.agent import build_default_agent
 from dsa_operator.agent.base import Agent
 from dsa_operator.audit.log import AuditLog, AuditRecord
+from dsa_operator.control.approvals import ApprovalError, ApprovalStore
+from dsa_operator.control.engine import ControlEngine
+from dsa_operator.control.lease import ExecutorLease, new_session_id
+from dsa_operator.policy import Policy, load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools, ToolError
 from dsa_operator.web.auth_google import AuthProvider, GoogleAuth
 
 LOG = logging.getLogger("dsa_operator.web")
 
 ToolsFactory = Callable[[str], ReadOnlyTools]
+
+
+def _default_control_engine(audit: AuditLog) -> ControlEngine:
+    """Build a real control engine over the forwarded etcd write path.
+
+    Note: there is no live executor here, so the engine is shadow-only by
+    construction (it cannot mutate observatory state).
+    """
+    from dsa_operator.audit.etcd_sink import EtcdAuditSink
+    from dsa_operator.etcd.write import connect_writer
+
+    writer = connect_writer(port=int(os.environ.get("DSA_OPERATOR_ETCD_PORT",
+                                                     DEFAULT_LOCAL_ETCD_PORT)))
+    # Mirror audit rows into etcd's /operator/audit trail too.
+    audit._etcd_sink = audit._etcd_sink or EtcdAuditSink(writer)  # type: ignore[attr-defined]
+    return ControlEngine(
+        load_policy(), ExecutorLease(writer), ApprovalStore(), audit,
+        writer=writer, live_executor=None,
+    )
 
 
 def _default_tools_factory(audit: AuditLog) -> ToolsFactory:
@@ -60,6 +83,7 @@ def create_app(
     tools_factory: Optional[ToolsFactory] = None,
     agent: Optional[Agent] = None,
     audit: Optional[AuditLog] = None,
+    control: Optional[ControlEngine] = None,
     secret_key: Optional[str] = None,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
@@ -75,10 +99,18 @@ def create_app(
     auth = auth or GoogleAuth.from_env()
     tools_factory = tools_factory or _default_tools_factory(audit)
     agent = agent or build_default_agent()
+    control = control if control is not None else _default_control_engine(audit)
 
     # -- auth helpers ---------------------------------------------------------
     def current_user() -> Optional[str]:
         return session.get("user")
+
+    def current_sid() -> str:
+        sid = session.get("sid")
+        if not sid:
+            sid = new_session_id()
+            session["sid"] = sid
+        return sid
 
     def require_user() -> str:
         user = current_user()
@@ -117,6 +149,7 @@ def create_app(
                                      note="not on operator allowlist"))
             return _login_error(f"{email} is not authorized", code=403)
         session["user"] = email
+        session["sid"] = new_session_id()
         audit.record(AuditRecord(action="login", kind="system", actor=email,
                                  note="google sso"))
         return redirect(url_for("index"))
@@ -207,9 +240,134 @@ def create_app(
             ],
         })
 
+    # -- control plane (Phase 2, shadow-only) ---------------------------------
+    @app.route("/api/policy")
+    def api_policy():
+        require_user()
+        pol: Policy = control.policy
+        actions = {
+            name: {
+                "gate": pol.gate_for(name),
+                "target": spec.get("target"),
+                "commissioning": spec.get("commissioning"),
+                "reversible": bool(spec.get("reversible", False)),
+                "two_person": pol.needs_two_person(name),
+                "note": spec.get("note", ""),
+            }
+            for name, spec in pol.actions.items()
+        }
+        return jsonify({"ok": True, "data": {
+            "version": pol.version, "mode": pol.mode,
+            "paused": control.is_paused(), "actions": actions,
+            "pointing": pol.pointing, "promoted": sorted(pol.promoted),
+        }})
+
+    @app.route("/api/lease")
+    def api_lease():
+        require_user()
+        h = control.lease.holder()
+        return jsonify({"ok": True, "data": {
+            "holder": h.to_json() if h else None,
+            "you_hold_it": bool(h and h.session_id == current_sid()),
+        }})
+
+    @app.route("/api/lease/acquire", methods=["POST"])
+    def api_lease_acquire():
+        user = require_user()
+        ok = control.lease.acquire(user, current_sid())
+        audit.record(AuditRecord(action="lease_acquire", kind="control",
+                                 actor=user, ok=ok, mode="live"))
+        h = control.lease.holder()
+        return jsonify({"ok": ok, "data": {"holder": h.to_json() if h else None}})
+
+    @app.route("/api/lease/release", methods=["POST"])
+    def api_lease_release():
+        user = require_user()
+        ok = control.lease.release(current_sid())
+        audit.record(AuditRecord(action="lease_release", kind="control",
+                                 actor=user, ok=ok, mode="live"))
+        return jsonify({"ok": ok})
+
+    @app.route("/api/lease/takeover", methods=["POST"])
+    def api_lease_takeover():
+        user = require_user()
+        prev = control.lease.holder()
+        ok = control.lease.takeover(user, current_sid())
+        audit.record(AuditRecord(
+            action="lease_takeover", kind="control", actor=user, ok=ok,
+            mode="live",
+            note=f"seized from {prev.actor if prev else 'nobody'}"))
+        return jsonify({"ok": ok})
+
+    @app.route("/api/control", methods=["POST"])
+    def api_control():
+        user = require_user()
+        body = request.get_json(silent=True) or {}
+        action = (body.get("action") or "").strip()
+        params = body.get("params") or {}
+        if not action:
+            return jsonify({"ok": False, "error": "missing action"}), 400
+        if not isinstance(params, dict):
+            return jsonify({"ok": False, "error": "params must be an object"}), 400
+        decision = control.evaluate(action, params, actor=user,
+                                    session_id=current_sid())
+        return jsonify({"ok": True, "decision": decision.to_json()})
+
+    @app.route("/api/approvals")
+    def api_approvals():
+        require_user()
+        return jsonify({"ok": True, "data": control.approvals.pending()})
+
+    @app.route("/api/approvals/request", methods=["POST"])
+    def api_approval_request():
+        user = require_user()
+        body = request.get_json(silent=True) or {}
+        action = (body.get("action") or "").strip()
+        params = body.get("params") or {}
+        if not control.policy.is_control_action(action):
+            return jsonify({"ok": False, "error": "unknown action"}), 400
+        ap = control.approvals.request(
+            action, params, requested_by=user,
+            n_required=control.policy.required_approvers(action),
+            ttl_s=control.policy.approval_ttl_s,
+            two_person=control.policy.needs_two_person(action),
+        )
+        audit.record(AuditRecord(action="approval_request", kind="approval",
+                                 actor=user, params={"action": action},
+                                 note=ap.id))
+        return jsonify({"ok": True, "data": ap.to_json()})
+
+    @app.route("/api/approvals/<approval_id>/grant", methods=["POST"])
+    def api_approval_grant(approval_id):
+        user = require_user()
+        try:
+            ap = control.approvals.grant(approval_id, user)
+        except ApprovalError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        audit.record(AuditRecord(action="approval_grant", kind="approval",
+                                 actor=user, params={"action": ap.action},
+                                 note=approval_id))
+        return jsonify({"ok": True, "data": ap.to_json()})
+
+    @app.route("/api/pause", methods=["POST"])
+    def api_pause():
+        user = require_user()
+        body = request.get_json(silent=True) or {}
+        ok = control.pause(user, reason=str(body.get("reason", "")))
+        return jsonify({"ok": ok, "paused": control.is_paused()})
+
+    @app.route("/api/resume", methods=["POST"])
+    def api_resume():
+        user = require_user()
+        if not control.lease.held_by(current_sid()):
+            return jsonify({"ok": False,
+                            "error": "only the executor may resume"}), 403
+        ok = control.resume(user)
+        return jsonify({"ok": ok, "paused": control.is_paused()})
+
     @app.route("/healthz")
     def healthz():
-        return jsonify({"ok": True, "phase": 1, "authed": bool(current_user())})
+        return jsonify({"ok": True, "phase": 2, "authed": bool(current_user())})
 
     return app
 

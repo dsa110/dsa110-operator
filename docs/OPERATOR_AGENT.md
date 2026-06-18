@@ -3,8 +3,9 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 1** — read-only foundation +
-> authenticated multi-user web console & assistant. No control yet.
+> so they can never drift.) **Status: Phase 2** — read-only foundation +
+> web console + the control gate engine in **shadow mode** (lease, gates,
+> approvals, e-stop, typed verbs). No live executor in this build.
 
 ## 1. What the agent is
 
@@ -41,7 +42,16 @@ data; only compact, secret-redacted summaries enter the Claude context.
 Pointing the array (dec → elevation), starting/stopping/reconfiguring
 observing, arming/disarming recording, firing injections + calibration,
 C2 dump controls, fringe-stop table build/deploy, and (always
-human-approved) fleet code updates. **Not present in Phase 0.**
+human-approved) fleet code updates.
+
+**Phase 2 ships these in shadow mode only.** Each verb runs the full
+gauntlet — lease → e-stop → gate → approval → parameter validation — and
+then renders the exact etcd/dashboard writes it *would* make, audited as a
+dry run. There is **no live executor**: even with `mode: live` in the
+policy, this build cannot mutate observatory state (the engine is
+constructed without an executor). Console endpoints: `POST /api/control`
+(dry-run a verb), `GET /api/policy`, `GET/POST /api/lease[...]`,
+`GET/POST /api/approvals[...]`, `POST /api/pause`, `POST /api/resume`.
 
 ### Web console (Phase 1)
 A Flask app on the laptop, behind **Google SSO**. Every authenticated user
@@ -109,7 +119,12 @@ breaches. Cadences/thresholds are configured alongside the monitor loop.
 
 ## 8. Roadmap
 
-Phase 0 read-only foundation → 1 web + SSO + multi-user → 2 lease +
-policy engine + shadow mode → 3 graduated live control → 4 pointing +
-observing plan → 5 autonomy + monitor/recovery. See the team chat design
-for detail.
+Phase 0 read-only foundation → 1 web + SSO + multi-user → **2 lease +
+policy engine + shadow mode (done)** → 3 graduated live control (the live
+executor, wired per-action behind these gates) → 4 pointing + observing
+plan → 5 autonomy + monitor/recovery. See the team chat design for detail.
+
+Promotion to live (Phase 3) is per-action: list a validated action under
+`promote:` in `config/local.yaml` to move it from its `commissioning` gate
+to its `target` gate, and supply the live executor. Until then every
+control path is exercised end-to-end without touching the array.

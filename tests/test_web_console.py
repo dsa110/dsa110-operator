@@ -7,11 +7,22 @@ import pytest
 
 from dsa_operator.agent.stub import StubAgent
 from dsa_operator.audit.log import AuditLog
+from dsa_operator.control.approvals import ApprovalStore
+from dsa_operator.control.engine import ControlEngine
+from dsa_operator.control.lease import ExecutorLease
 from dsa_operator.dashboard import DashboardClient
 from dsa_operator.etcd.read import FakeEtcdReader, ReadOnlyEtcd
+from dsa_operator.etcd.write import FakeOperatorBackend, OperatorEtcdWriter
+from dsa_operator.policy import load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools
 from dsa_operator.web.app import create_app
 from dsa_operator.web.auth_google import FakeAuth
+
+
+def _fake_engine(audit):
+    writer = OperatorEtcdWriter(FakeOperatorBackend())
+    return ControlEngine(load_policy(), ExecutorLease(writer),
+                         ApprovalStore(), audit, writer=writer)
 
 ETCD_SEED = {
     "/mon/service/corr_rt/3": {"alive": True},
@@ -51,6 +62,7 @@ def app(tmp_path):
         tools_factory=tools_factory,
         agent=StubAgent(),
         audit=audit,
+        control=_fake_engine(audit),
         secret_key="test-secret",
     )
     application.config.update(TESTING=True)
@@ -110,7 +122,8 @@ def test_login_denied_when_not_authorized(tmp_path):
     app = create_app(
         auth=Deny(email="mallory@evil.com"),
         tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
-        agent=StubAgent(), audit=audit, secret_key="x",
+        agent=StubAgent(), audit=audit, control=_fake_engine(audit),
+        secret_key="x",
     )
     c = app.test_client()
     r = c.get("/login")
@@ -180,12 +193,19 @@ def test_chat_is_audited(client, app):
     assert "chat" in actions
 
 
-# -- no control surface -----------------------------------------------------
+# -- mutating-route inventory -----------------------------------------------
 
-def test_no_control_routes_exist(app):
-    """Phase 1 must expose no mutating verbs beyond chat/login/logout."""
-    allowed_post = {"/api/chat", "/logout"}
+def test_mutating_routes_are_exactly_the_known_set(app):
+    """No unexpected mutating route may exist; control routes are shadow/gated."""
+    allowed_post = {
+        "/api/chat", "/logout",
+        # Phase 2 control plane (all lease/gate/approval guarded, shadow-only):
+        "/api/lease/acquire", "/api/lease/release", "/api/lease/takeover",
+        "/api/control", "/api/approvals/request",
+        "/api/approvals/<approval_id>/grant", "/api/pause", "/api/resume",
+    }
+    found = set()
     for rule in app.url_map.iter_rules():
-        methods = rule.methods - {"HEAD", "OPTIONS"}
-        if methods - {"GET"}:
-            assert rule.rule in allowed_post, f"unexpected mutating route {rule.rule}"
+        if rule.methods - {"HEAD", "OPTIONS", "GET"}:
+            found.add(rule.rule)
+    assert found == allowed_post, f"route drift: {found ^ allowed_post}"
