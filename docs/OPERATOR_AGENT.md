@@ -3,7 +3,8 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 0** — read-only foundation.
+> so they can never drift.) **Status: Phase 1** — read-only foundation +
+> authenticated multi-user web console & assistant. No control yet.
 
 ## 1. What the agent is
 
@@ -41,6 +42,32 @@ Pointing the array (dec → elevation), starting/stopping/reconfiguring
 observing, arming/disarming recording, firing injections + calibration,
 C2 dump controls, fringe-stop table build/deploy, and (always
 human-approved) fleet code updates. **Not present in Phase 0.**
+
+### Web console (Phase 1)
+A Flask app on the laptop, behind **Google SSO**. Every authenticated user
+gets the read-only views and an **assistant chat** that answers questions
+by calling the read-only tools above (each call audited under that user's
+Google identity). The brain is Claude via the operator's own Anthropic
+account; when no API key is present it falls back to a deterministic
+keyword-routed stub so monitoring/Q&A still works.
+
+Run it:
+
+```bash
+pip install -e '.[web,agent]'              # agent extra optional
+# open the tunnel in another shell: python -m dsa_operator.transport.ssh_tunnel
+export GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=...
+export DSA_OPERATOR_ALLOWED_DOMAINS=dsa110.org      # or _ALLOWED_EMAILS=a@x,b@y
+export DSA_OPERATOR_REDIRECT_URI=http://localhost:8787/auth/callback
+export ANTHROPIC_API_KEY=sk-ant-...                 # optional; stub used if unset
+python -m dsa_operator.web.app                      # serves 127.0.0.1:8787
+```
+
+Authorization is an allowlist (`DSA_OPERATOR_ALLOWED_DOMAINS` /
+`DSA_OPERATOR_ALLOWED_EMAILS`); unlisted Google accounts are denied and the
+denial is audited. The session cookie is HTTP-only, SameSite=Lax, signed
+with `DSA_OPERATOR_SECRET_KEY`. The console exposes **no mutating routes**
+other than `chat`/`login`/`logout` (enforced by a test).
 
 ## 4. What it CANNOT do
 

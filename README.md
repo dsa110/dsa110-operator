@@ -15,10 +15,11 @@ an etcd lease. Risky/irreversible actions are gated by a human-readable,
 machine-enforced **policy** (`config/policy.yaml`), and **everything** is
 logged.
 
-> **Status: Phase 0.** Read-only foundation only — SSH tunnel, read-only
-> etcd/dashboard access, and the audit log. There is **no control
-> surface yet**; mutating tools arrive (in shadow mode first) in later
-> phases. See `docs/OPERATOR_AGENT.md` for the capability roadmap.
+> **Status: Phase 1.** Read-only foundation + an authenticated,
+> multi-user **web console** (Flask + Google SSO) with an assistant chat
+> over the read-only tools. There is still **no control surface**;
+> mutating tools arrive (in shadow mode first) in later phases. See
+> `docs/OPERATOR_AGENT.md` for the capability roadmap.
 
 ## What this is NOT allowed to touch
 
@@ -37,22 +38,37 @@ logged.
 | `src/dsa_operator/etcd/` | Read-only etcd client over the forwarded port. |
 | `src/dsa_operator/tools/` | Typed tool surface the agent is allowed to call. |
 | `src/dsa_operator/audit/` | Append-only local log + etcd audit + Slack notify. |
+| `src/dsa_operator/agent/` | The Claude brain + deterministic stub fallback (read-only tools). |
 | `src/dsa_operator/monitor/` | (later) local, non-LLM health/injection/recovery loops. |
-| `src/dsa_operator/web/` | (later) FastAPI console + Google SSO. |
+| `src/dsa_operator/web/` | Flask console + Google SSO + assistant chat (read-only). |
 | `config/policy.yaml` | Capability document as code (the approval gates). |
 | `config/egress_allowlist.yaml` | The only outbound endpoints permitted. |
 | `docs/OPERATOR_AGENT.md` | Operator runbook (generated contract + playbooks). |
 
-## Quick start (Phase 0, read-only)
+## Quick start
 
 ```bash
-pip install -e '.[etcd,dev]'
+pip install -e '.[etcd,web,agent,dev]'
 # open the tunnel to h23 (forwards etcd + dashboard locally)
 python -m dsa_operator.transport.ssh_tunnel --ssh-host h23
-# in another shell, smoke the read-only tools
+# smoke the read-only tools (CLI)
 python -m dsa_operator.tools.readonly --demo
 pytest -q
 ```
+
+### Web console (Phase 1)
+
+```bash
+export GOOGLE_CLIENT_ID=...  GOOGLE_CLIENT_SECRET=...
+export DSA_OPERATOR_ALLOWED_DOMAINS=dsa110.org     # or _ALLOWED_EMAILS=a@x,b@y
+export DSA_OPERATOR_REDIRECT_URI=http://localhost:8787/auth/callback
+export ANTHROPIC_API_KEY=sk-ant-...                # optional; stub agent if unset
+python -m dsa_operator.web.app                     # 127.0.0.1:8787
+```
+
+Any allow-listed Google account gets read-only views + the assistant chat;
+unlisted accounts are denied and audited. The console has **no mutating
+routes** other than chat/login/logout.
 
 ## Design
 

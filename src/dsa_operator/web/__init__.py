@@ -1,6 +1,10 @@
-"""Operator web console (Phase 1+).
+"""Operator web console (Phase 1).
 
-Reserved for the FastAPI app, Google SSO, the multi-user chat/monitoring
-surface, the single-executor lease UI, and the approval flow. Not part of
-the Phase-0 read-only import graph.
+Flask app + Google SSO + the multi-user read-only monitoring/chat surface.
+The single-executor lease UI and approval flow arrive in later phases.
 """
+from __future__ import annotations
+
+from dsa_operator.web.app import create_app
+
+__all__ = ["create_app"]
