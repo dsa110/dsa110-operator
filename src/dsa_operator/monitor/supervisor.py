@@ -288,20 +288,22 @@ def main() -> int:  # pragma: no cover
     import os
     import signal
 
-    from dsa_operator.audit.log import AuditLog
+    from dsa_operator.audit.egress import maybe_install_from_env
     from dsa_operator.env import load_secrets
     from dsa_operator.observing.plan import PlanStore
     from dsa_operator.observing.runner import PlanRunner
-    from dsa_operator.web.app import _default_control_engine, _default_tools_factory
+    from dsa_operator.web.app import (
+        _default_audit, _default_control_engine, _default_tools_factory)
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     load_secrets()
+    maybe_install_from_env()
     ap = argparse.ArgumentParser(description="dsa110-operator autonomy supervisor")
     ap.add_argument("--actor", default=os.environ.get("DSA_OPERATOR_ACTOR", "agent"))
     args = ap.parse_args()
 
-    audit = AuditLog(os.environ.get("DSA_OPERATOR_AUDIT_ROOT", "audit_log"))
+    audit = _default_audit()
     engine = _default_control_engine(audit)
     tools = _default_tools_factory(audit)("agent")
     sid = "supervisor"

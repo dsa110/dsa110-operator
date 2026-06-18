@@ -111,6 +111,19 @@ From the web console, `GET /api/autonomy` shows supervisor status and
 `POST /api/autonomy/tick` forces a monitor refresh (mutating loops stay
 gated unless the *supervisor* session holds the lease).
 
+## Deployment
+
+Three user systemd units (tunnel, web console, standing supervisor) live in
+`deploy/` with an install runbook in `deploy/README.md`. Secrets come from a
+git-ignored `EnvironmentFile`; set `DSA_OPERATOR_ENFORCE_EGRESS=1` to arm the
+in-process egress tripwire and `DSA_OPERATOR_SLACK_WEBHOOK` for notifications
+(`python -m dsa_operator.audit.slack --test "hi"` to verify). The console is
+tabbed: **Monitor** (live views + chat), **Control** (lease / authority /
+e-stop / propose-action / approvals), **Plan**, and **Autonomy**.
+
+Promote actions from `commissioning` to live per-action via
+`config/local.yaml` (see `config/local.yaml.example` for the staged ladder).
+
 ## Design
 
 See the design discussion captured in the team chat and

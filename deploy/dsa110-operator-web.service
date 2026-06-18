@@ -1,0 +1,23 @@
+# The web console (Flask + Google SSO + chat). Depends on the tunnel.
+# Secrets (ANTHROPIC_API_KEY, GOOGLE_CLIENT_ID/SECRET, DSA_OPERATOR_*) come
+# from an EnvironmentFile that is NOT in git (chmod 600). Set
+# DSA_OPERATOR_ENFORCE_EGRESS=1 there to arm the in-process egress guard.
+[Unit]
+Description=dsa110-operator web console
+After=dsa110-operator-tunnel.service network-online.target
+Wants=dsa110-operator-tunnel.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dsa110-operator
+EnvironmentFile=%h/.config/dsa110-operator/operator.env
+Environment=PYTHONUNBUFFERED=1
+Environment=DSA_OPERATOR_BIND=127.0.0.1
+Environment=DSA_OPERATOR_PORT=8787
+Environment=DSA_OPERATOR_AUDIT_ROOT=%h/.local/share/dsa110-operator/audit
+ExecStart=%h/dsa110-operator/.venv/bin/python -m dsa_operator.web.app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

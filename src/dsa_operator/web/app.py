@@ -48,6 +48,19 @@ LOG = logging.getLogger("dsa_operator.web")
 ToolsFactory = Callable[[str], ReadOnlyTools]
 
 
+def _default_audit() -> AuditLog:
+    """AuditLog with a Slack notifier wired from the environment (no-op if
+    DSA_OPERATOR_SLACK_WEBHOOK is unset)."""
+    from dsa_operator.audit.slack import SlackNotifier
+    root = os.environ.get("DSA_OPERATOR_AUDIT_ROOT", "audit_log")
+    try:
+        slack = SlackNotifier()
+    except ValueError:
+        LOG.warning("slack webhook rejected by egress allowlist; disabling")
+        slack = None
+    return AuditLog(root, slack=slack)
+
+
 def _default_control_engine(audit: AuditLog) -> ControlEngine:
     """Build the real control engine over the forwarded etcd + dashboard.
 
@@ -121,7 +134,7 @@ def create_app(
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-    audit = audit or AuditLog(os.environ.get("DSA_OPERATOR_AUDIT_ROOT", "audit_log"))
+    audit = audit or _default_audit()
     auth = auth or GoogleAuth.from_env()
     tools_factory = tools_factory or _default_tools_factory(audit)
     agent = agent or build_default_agent()
@@ -563,8 +576,10 @@ def create_app(
 
 def main() -> int:  # pragma: no cover
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from dsa_operator.audit.egress import maybe_install_from_env
     from dsa_operator.env import load_secrets
     load_secrets()
+    maybe_install_from_env()
     app = create_app()
     host = os.environ.get("DSA_OPERATOR_BIND", "127.0.0.1")
     port = int(os.environ.get("DSA_OPERATOR_PORT", "8787"))

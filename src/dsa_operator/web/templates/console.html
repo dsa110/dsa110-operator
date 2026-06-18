@@ -13,24 +13,36 @@
              padding: 10px 18px; background: var(--panel); border-bottom:1px solid var(--border); }
     header .who { color: var(--mut); font-size: 13px; }
     header .ro { color:#74b9ff; font-size:12px; border:1px solid #335; padding:2px 8px; border-radius:9px; }
-    .wrap { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px; }
-    .card { background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px; }
+    nav.tabs { display:flex; gap:4px; padding:8px 16px 0; background:var(--panel);
+               border-bottom:1px solid var(--border); }
+    nav.tabs button { background:transparent; border:1px solid transparent; border-bottom:none;
+                      color:var(--mut); padding:8px 14px; border-radius:8px 8px 0 0; cursor:pointer; }
+    nav.tabs button.active { background:var(--bg); color:var(--ink); border-color:var(--border); }
+    .tab { display:none; padding:16px; }
+    .tab.active { display:block; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .card { background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px; margin-bottom:16px; }
     .card h3 { margin:0 0 8px; font-size:14px; }
     pre { background:#0c1116; border:1px solid var(--border); border-radius:8px;
-          padding:10px; overflow:auto; max-height:240px; font-size:12px; color:#cdd6df; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+          padding:10px; overflow:auto; max-height:260px; font-size:12px; color:#cdd6df; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
+    label { font-size:12px; color:var(--mut); }
+    input, select, textarea { background:#0c1116; border:1px solid var(--border);
+             color:var(--ink); border-radius:6px; padding:7px 9px; font-size:13px; }
+    textarea { width:100%; font-family:monospace; min-height:70px; }
     button { background:#2d3742; color:var(--ink); border:1px solid #3d4854;
              border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
     button:hover { background:#3a4654; }
-    .chat { grid-column: 1 / 3; }
+    button.danger { border-color:#7a2b2b; }
     #log { display:flex; flex-direction:column; gap:10px; max-height:340px; overflow:auto; }
     .msg { padding:8px 12px; border-radius:8px; font-size:14px; white-space:pre-wrap; }
     .me { background:#22303f; align-self:flex-end; max-width:75%; }
     .bot { background:#15202b; border:1px solid var(--border); max-width:90%; }
     .tools { color:var(--mut); font-size:11px; margin-top:6px; }
     form.ask { display:flex; gap:8px; margin-top:10px; }
-    form.ask input { flex:1; background:#0c1116; border:1px solid var(--border);
-                     color:var(--ink); border-radius:8px; padding:9px 12px; font-size:14px; }
+    form.ask input { flex:1; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
   </style>
 </head>
 <body>
@@ -39,111 +51,293 @@
     <div class="who">{{ user }} · agent: {{ agent_model }} · <a href="/logout" style="color:#74b9ff;">sign out</a></div>
   </header>
 
-  <div class="wrap">
-    <div class="card">
-      <h3>Live state</h3>
-      <div class="row">
-        <button onclick="load('/api/fleet','fleet')">Fleet</button>
-        <button onclick="load('/api/pointing','fleet')">Pointing</button>
-        <button onclick="load('/api/sky','fleet')">Sky</button>
-        <button onclick="load('/api/rfi','fleet')">RFI</button>
-        <button onclick="load('/api/injections','fleet')">Injections</button>
-        <button onclick="load('/api/candidates','fleet')">Candidates</button>
-        <button onclick="load('/api/audit','fleet')">Audit</button>
-      </div>
-      <pre id="fleet">Pick a view…</pre>
-    </div>
+  <nav class="tabs">
+    <button data-tab="monitor" class="active" onclick="showTab('monitor')">Monitor</button>
+    <button data-tab="control" onclick="showTab('control')">Control</button>
+    <button data-tab="plan" onclick="showTab('plan')">Plan</button>
+    <button data-tab="autonomy" onclick="showTab('autonomy')">Autonomy</button>
+  </nav>
 
-    <div class="card">
-      <h3>Executor lease</h3>
-      <p style="color:var(--mut); font-size:13px;">
-        Anyone may <em>watch and ask</em>. Only the <strong>one</strong>
-        session holding the executor lease may run control actions — and
-        even then every action passes the policy gates (autonomous /
-        human-approval), the dashboard lockout, and the e-stop. Acquire the
-        lease to let the assistant act on your behalf.
-      </p>
-      <div class="row">
-        <button onclick="acquireLease()">Acquire</button>
-        <button onclick="releaseLease()">Release</button>
-        <button onclick="refreshLease()">Refresh status</button>
+  <!-- ===================== MONITOR ===================== -->
+  <section id="tab-monitor" class="tab active">
+    <div class="grid2">
+      <div class="card">
+        <h3>Live state</h3>
+        <div class="row">
+          <button onclick="load('/api/fleet','mon')">Fleet</button>
+          <button onclick="load('/api/pointing','mon')">Pointing</button>
+          <button onclick="load('/api/sky','mon')">Sky</button>
+          <button onclick="load('/api/rfi','mon')">RFI</button>
+          <button onclick="load('/api/injections','mon')">Injections</button>
+          <button onclick="load('/api/candidates','mon')">Candidates</button>
+          <button onclick="load('/api/audit','mon')">Audit</button>
+        </div>
+        <pre id="mon">Pick a view…</pre>
       </div>
-      <pre id="lease">lease status…</pre>
+      <div class="card">
+        <h3>Ask the operator assistant</h3>
+        <div id="log"></div>
+        <form class="ask" onsubmit="return ask(event)">
+          <input id="q" placeholder="e.g. point to dec 44; or: are all nodes up?" autocomplete="off" />
+          <button type="submit">Ask</button>
+        </form>
+        <p style="color:var(--mut);font-size:12px;">The assistant can also
+          <em>operate</em> the array when this session holds the executor lease
+          (see Control) — every action still passes the policy gates.</p>
+      </div>
     </div>
+  </section>
 
-    <div class="card chat">
-      <h3>Ask the operator assistant</h3>
-      <div id="log"></div>
-      <form class="ask" onsubmit="return ask(event)">
-        <input id="q" placeholder="e.g. point to dec 44; or: are all nodes up?" autocomplete="off" />
-        <button type="submit">Ask</button>
-      </form>
+  <!-- ===================== CONTROL ===================== -->
+  <section id="tab-control" class="tab">
+    <div class="grid2">
+      <div class="card">
+        <h3>Executor lease</h3>
+        <p style="color:var(--mut);font-size:12px;">Only the one session holding
+          the lease may run control actions.</p>
+        <div class="row">
+          <button onclick="acquireLease()">Acquire</button>
+          <button onclick="releaseLease()">Release</button>
+          <button onclick="takeoverLease()" class="danger">Take over</button>
+          <button onclick="refreshLease()">Status</button>
+        </div>
+        <pre id="lease">lease status…</pre>
+      </div>
+      <div class="card">
+        <h3>Human authority &amp; e-stop</h3>
+        <div class="row">
+          <button onclick="load('/api/authority','authority')">Authority</button>
+          <button onclick="load('/api/observation','authority')">Observation</button>
+          <button onclick="pause()" class="danger">Pause (e-stop)</button>
+          <button onclick="resume()">Resume</button>
+        </div>
+        <pre id="authority">dashboard authority…</pre>
+      </div>
     </div>
-  </div>
+    <div class="card">
+      <h3>Propose a control action</h3>
+      <div class="row">
+        <label>action</label>
+        <select id="ctl-action" onchange="ctlActionHint()"></select>
+        <span id="ctl-gate" style="font-size:12px;color:var(--mut);"></span>
+      </div>
+      <div class="row"><label>params (JSON)</label></div>
+      <textarea id="ctl-params" placeholder='{"dec_deg": 44.0}'>{}</textarea>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="proposeAction()">Propose / run</button>
+        <button onclick="requestApproval()">Request approval</button>
+      </div>
+      <pre id="ctl-out">decision…</pre>
+    </div>
+    <div class="card">
+      <h3>Pending approvals</h3>
+      <button onclick="refreshApprovals()">Refresh</button>
+      <table><thead><tr><th>id</th><th>action</th><th>params</th><th>by</th>
+        <th>granted</th><th>expires</th><th></th></tr></thead>
+        <tbody id="appr-rows"><tr><td colspan="7" style="color:var(--mut)">none</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================== PLAN ===================== -->
+  <section id="tab-plan" class="tab">
+    <div class="card">
+      <h3>Active observing plan</h3>
+      <div class="row">
+        <button onclick="load('/api/plan','plan-out')">View plan</button>
+        <button onclick="planPost('/api/plan/preview','plan-out')">Preview next</button>
+        <button onclick="planPost('/api/plan/tick','plan-out')">Tick (executor)</button>
+        <button onclick="planPost('/api/plan/clear','plan-out')" class="danger">Clear</button>
+      </div>
+      <pre id="plan-out">plan…</pre>
+    </div>
+    <div class="card">
+      <h3>Set plan (executor only)</h3>
+      <p style="color:var(--mut);font-size:12px;">Provide <code>sources</code>
+        (transit-centred) or explicit <code>segments</code>.</p>
+      <textarea id="plan-body" placeholder='{"sources":[{"label":"3C48","ra_deg":24.4,"dec_deg":33.2,"window_min":30}]}'>{"sources":[]}</textarea>
+      <div class="row" style="margin-top:8px;"><button onclick="setPlan()">Install plan</button></div>
+      <pre id="plan-set-out"></pre>
+    </div>
+  </section>
+
+  <!-- ===================== AUTONOMY ===================== -->
+  <section id="tab-autonomy" class="tab">
+    <div class="card">
+      <h3>Autonomy supervisor</h3>
+      <p style="color:var(--mut);font-size:12px;">Standing health/recovery/
+        injection/plan loops. From the browser this is monitor-only (the
+        mutating loops act only in the standing-executor process).</p>
+      <div class="row">
+        <button onclick="load('/api/autonomy','auto-out')">Status</button>
+        <button onclick="planPost('/api/autonomy/tick','auto-out')">Force a tick</button>
+      </div>
+      <pre id="auto-out">autonomy status…</pre>
+    </div>
+  </section>
 
 <script>
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
+  document.getElementById("tab-" + name).classList.add("active");
+  document.querySelector(`nav.tabs button[data-tab="${name}"]`).classList.add("active");
+  if (name === "control") { refreshLease(); refreshApprovals(); loadActions(); }
+}
+
 async function load(url, target) {
   const el = document.getElementById(target);
   el.textContent = "loading…";
   try {
     const r = await fetch(url);
     const j = await r.json();
-    el.textContent = JSON.stringify(j.ok ? j.data : j, null, 2);
+    el.textContent = JSON.stringify(j.ok ? (j.data ?? j) : j, null, 2);
   } catch (e) { el.textContent = "error: " + e; }
 }
-function add(cls, text, tools) {
-  const log = document.getElementById("log");
-  const d = document.createElement("div");
-  d.className = "msg " + cls;
-  d.textContent = text;
-  if (tools && tools.length) {
-    const t = document.createElement("div");
-    t.className = "tools";
-    t.textContent = "tools: " + tools.map(c => c.name + (c.ok ? "" : " (FAILED)")).join(", ");
-    d.appendChild(t);
-  }
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+async function postJSON(url, body) {
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                             body: JSON.stringify(body || {})});
+  return r.json();
 }
+async function planPost(url, target) {
+  const el = document.getElementById(target);
+  el.textContent = "…";
+  try { el.textContent = JSON.stringify(await postJSON(url, {}), null, 2); }
+  catch (e) { el.textContent = "error: " + e; }
+}
+
+// -- lease --
 async function refreshLease() {
   const el = document.getElementById("lease");
   try {
-    const r = await fetch("/api/lease");
-    const j = await r.json();
+    const j = await (await fetch("/api/lease")).json();
     const d = j.data || j;
     el.textContent = JSON.stringify(d, null, 2);
     const badge = document.getElementById("mode-badge");
-    if (d && d.you_hold_it) { badge.textContent = "EXECUTOR · control enabled"; }
-    else { badge.textContent = "monitoring"; }
+    badge.textContent = (d && d.you_hold_it) ? "EXECUTOR · control enabled" : "monitoring";
   } catch (e) { el.textContent = "error: " + e; }
 }
 async function _leasePost(path) {
   const el = document.getElementById("lease");
-  try {
-    const r = await fetch(path, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: "{}"});
-    const j = await r.json();
-    el.textContent = JSON.stringify(j.data || j, null, 2);
-  } catch (e) { el.textContent = "error: " + e; }
+  try { el.textContent = JSON.stringify(await postJSON(path, {}), null, 2); }
+  catch (e) { el.textContent = "error: " + e; }
   refreshLease();
 }
 function acquireLease() { _leasePost("/api/lease/acquire"); }
 function releaseLease() { _leasePost("/api/lease/release"); }
+function takeoverLease() { if (confirm("Seize the executor lease from the current holder?")) _leasePost("/api/lease/takeover"); }
+
+// -- e-stop --
+async function pause() {
+  const reason = prompt("Reason for engaging the e-stop?", "manual stop") || "";
+  document.getElementById("authority").textContent =
+    JSON.stringify(await postJSON("/api/pause", {reason}), null, 2);
+}
+async function resume() {
+  document.getElementById("authority").textContent =
+    JSON.stringify(await postJSON("/api/resume", {}), null, 2);
+}
+
+// -- propose action --
+let _actionMeta = {};
+async function loadActions() {
+  try {
+    const j = await (await fetch("/api/policy")).json();
+    const actions = (j.data || {}).actions || {};
+    _actionMeta = actions;
+    const sel = document.getElementById("ctl-action");
+    if (sel.options.length) return;            // already populated
+    Object.keys(actions).sort().forEach(name => {
+      const o = document.createElement("option"); o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    });
+    ctlActionHint();
+  } catch (e) { /* leave empty */ }
+}
+function ctlActionHint() {
+  const name = document.getElementById("ctl-action").value;
+  const m = _actionMeta[name] || {};
+  document.getElementById("ctl-gate").textContent =
+    m.gate ? `gate: ${m.gate}${m.two_person ? " (two-person)" : ""}${m.reversible ? "" : " · irreversible"}` : "";
+}
+function _ctlBody() {
+  const action = document.getElementById("ctl-action").value;
+  let params;
+  try { params = JSON.parse(document.getElementById("ctl-params").value || "{}"); }
+  catch (e) { throw new Error("params is not valid JSON"); }
+  return {action, params};
+}
+async function proposeAction() {
+  const out = document.getElementById("ctl-out");
+  try {
+    const j = await postJSON("/api/control", _ctlBody());
+    out.textContent = JSON.stringify(j.decision || j, null, 2);
+  } catch (e) { out.textContent = "error: " + e; }
+}
+async function requestApproval() {
+  const out = document.getElementById("ctl-out");
+  try {
+    const j = await postJSON("/api/approvals/request", _ctlBody());
+    out.textContent = JSON.stringify(j.data || j, null, 2);
+    refreshApprovals();
+  } catch (e) { out.textContent = "error: " + e; }
+}
+
+// -- approvals --
+async function refreshApprovals() {
+  const tb = document.getElementById("appr-rows");
+  try {
+    const j = await (await fetch("/api/approvals")).json();
+    const rows = j.data || [];
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" style="color:var(--mut)">none</td></tr>'; return; }
+    tb.innerHTML = "";
+    rows.forEach(a => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${a.id}</td><td>${a.action}</td>
+        <td>${JSON.stringify(a.params)}</td><td>${a.requested_by}</td>
+        <td>${(a.granted_by||[]).length}/${a.n_required}</td>
+        <td>${Math.round(a.expires_in_s)}s</td>
+        <td><button onclick="grant('${a.id}')">Grant</button></td>`;
+      tb.appendChild(tr);
+    });
+  } catch (e) { tb.innerHTML = `<tr><td colspan="7">error: ${e}</td></tr>`; }
+}
+async function grant(id) {
+  await postJSON(`/api/approvals/${id}/grant`, {});
+  refreshApprovals();
+}
+
+// -- plan --
+async function setPlan() {
+  const out = document.getElementById("plan-set-out");
+  let body;
+  try { body = JSON.parse(document.getElementById("plan-body").value || "{}"); }
+  catch (e) { out.textContent = "error: plan body is not valid JSON"; return; }
+  try { out.textContent = JSON.stringify(await postJSON("/api/plan", body), null, 2); }
+  catch (e) { out.textContent = "error: " + e; }
+}
+
+// -- chat --
+function add(cls, text, tools) {
+  const log = document.getElementById("log");
+  const d = document.createElement("div");
+  d.className = "msg " + cls; d.textContent = text;
+  if (tools && tools.length) {
+    const t = document.createElement("div"); t.className = "tools";
+    t.textContent = "tools: " + tools.map(c => c.name + (c.ok ? "" : " (FAILED)")).join(", ");
+    d.appendChild(t);
+  }
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+}
 async function ask(ev) {
   ev.preventDefault();
   const q = document.getElementById("q");
   const msg = q.value.trim();
   if (!msg) return false;
-  add("me", msg);
-  q.value = "";
-  add("bot", "…");
+  add("me", msg); q.value = ""; add("bot", "…");
   const placeholder = document.querySelector("#log .bot:last-child");
   try {
-    const r = await fetch("/api/chat", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message: msg}),
-    });
-    const j = await r.json();
+    const j = await postJSON("/api/chat", {message: msg});
     placeholder.remove();
     if (j.ok) add("bot", j.text, j.tool_calls);
     else add("bot", "error: " + (j.error || "chat failed"));

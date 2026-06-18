@@ -2,12 +2,42 @@
 #
 # `promote` graduates an action from its conservative `commissioning` gate
 # to its steady-state `target` gate (see config/policy.yaml). An action is
-# promoted only after it has been validated live; promotion is audited.
+# promoted only AFTER it has been validated live; promotion is audited.
 #
-# Copy to config/local.yaml and edit. With no file present, every action
-# uses its commissioning gate (the safe default).
+# Copy to config/local.yaml and edit. With no file present (or an empty
+# list), every action uses its commissioning gate — the safe default.
+#
+# IMPORTANT: promotion alone never makes anything move. Live execution also
+# requires `mode: live` in config/policy.yaml AND a wired live executor.
+# So a sane rollout is:
+#   1. Keep mode: shadow. Exercise each action from the console / chat and
+#      confirm the rendered plan (the exact writes/POSTs) is correct.
+#   2. Promote the low-risk, reversible, already-autonomous actions first.
+#   3. Flip mode: live and watch the audit log + Slack for the first real
+#      executions.
+#   4. Promote the higher-impact actions one at a time, validating each.
+#
+# Suggested ladder (uncomment as each is validated on YOUR system):
 
 promote: []
-  # - fire_injection
-  # - build_fstable
+
+  # --- stage 1: reversible, low-risk, autonomous in target ---
+  # - fire_injection      # synthetic pulse; health-check + calibration
+  # - inject_calibrate
+  # - build_fstable       # builds a cache file; no observing impact
+  # - set_dumps_enabled   # C2 dump kill-switch (reversible)
+  # - dump_now
+
+  # --- stage 2: observing control (validate the dec->el branch first) ---
   # - point_array
+  # - bounce_search
+  # - utc_start
+  # - utc_stop
+
+  # --- stage 3: fleet-level (high impact) ---
+  # - start_fleet
+  # - stop_fleet
+  # - deploy_fstable
+
+  # NEVER promote without a human in the loop (kept at approval by policy):
+  #   update_fleet_code, set_policy  (set_policy is also two-person)

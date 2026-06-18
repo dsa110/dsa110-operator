@@ -89,10 +89,40 @@ class SlackNotifier:
             return
         import requests  # lazy
 
+        from dsa_operator.audit.egress import EgressError, assert_url_allowed
+        try:
+            assert_url_allowed(self.webhook_url)
+        except EgressError:
+            LOG.error("slack webhook host not on egress allowlist; refusing")
+            return
         try:
             requests.post(self.webhook_url, json={"text": text}, timeout=self.timeout_s)
         except Exception:                                  # noqa: BLE001
             LOG.warning("slack post failed", exc_info=True)
 
 
+def _main(argv: Optional[list] = None) -> int:  # pragma: no cover
+    """`python -m dsa_operator.audit.slack --test "msg"` — post a test line."""
+    import argparse
+
+    from dsa_operator.env import load_secrets
+    logging.basicConfig(level=logging.INFO)
+    load_secrets()
+    ap = argparse.ArgumentParser(description="Slack notifier self-test")
+    ap.add_argument("--test", default="dsa110-operator slack test ✅",
+                    help="message to post")
+    args = ap.parse_args(argv)
+    n = SlackNotifier()
+    if not n.enabled:
+        print("DSA_OPERATOR_SLACK_WEBHOOK is not set; nothing to post.")
+        return 1
+    n.post(args.test)
+    print("posted (best-effort) to Slack webhook.")
+    return 0
+
+
 __all__ = ["SlackNotifier", "format_audit_line"]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(_main())

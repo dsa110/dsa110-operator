@@ -29,7 +29,11 @@ laptop ──ssh──> h23 ──┬── etcd (etcdv3service.pro.pvt:2379)   
 
 Outbound network is restricted to the allowlist in
 `config/egress_allowlist.yaml`: **Anthropic API**, **Google OAuth**,
-**Slack webhook**, and **SSH to `h23`**. Nothing else.
+**Slack webhook**, and **SSH to `h23`**. Nothing else. The host firewall is
+the primary control; `dsa_operator.audit.egress` adds an in-process DNS
+tripwire (`install_socket_guard`, armed by `DSA_OPERATOR_ENFORCE_EGRESS=1`)
+that fails closed for any non-allowlisted public host while always allowing
+loopback/private (the SSH-forwarded etcd + dashboard).
 
 **No raw telemetry is sent to the model.** Local code summarises `/mon`
 data; only compact, secret-redacted summaries enter the Claude context.

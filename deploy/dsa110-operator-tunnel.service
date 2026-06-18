@@ -1,0 +1,23 @@
+# SSH tunnel to h23 (forwards etcd + dashboard to localhost). Install as a
+# user unit so it runs as the operator, not root:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/*.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now dsa110-operator-tunnel
+#
+# Requires a passwordless SSH key for `h23` in ~/.ssh/config (Host h23 ...).
+[Unit]
+Description=dsa110-operator SSH tunnel to h23 (etcd + dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dsa110-operator
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/dsa110-operator/.venv/bin/python -m dsa_operator.transport.ssh_tunnel --ssh-host h23
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
