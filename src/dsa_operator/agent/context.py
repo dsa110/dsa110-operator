@@ -35,13 +35,14 @@ def tool_schema_json() -> list[dict]:
         props = {
             k: {"type": "string", "description": v} for k, v in spec.params.items()
         }
+        required = [k for k, v in spec.params.items() if "optional" not in v.lower()]
         schemas.append({
             "name": spec.name,
             "description": spec.description,
             "input_schema": {
                 "type": "object",
                 "properties": props,
-                "required": [k for k in spec.params],
+                "required": required,
             },
         })
     return schemas

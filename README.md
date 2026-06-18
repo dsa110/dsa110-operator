@@ -15,15 +15,16 @@ an etcd lease. Risky/irreversible actions are gated by a human-readable,
 machine-enforced **policy** (`config/policy.yaml`), and **everything** is
 logged.
 
-> **Status: Phase 3.** Everything in Phase 2 plus a **live executor**,
-> graduated **per action**. Verbs are grounded against the real dsa110-rt
-> control surface (dashboard `/control/` routes + direct `/cmd/ant/` for
-> pointing). Live execution fires only when the policy is `mode: live`
-> **and** the action is listed under `promote:` in `config/local.yaml`.
-> With the shipped defaults (`mode: shadow`, nothing promoted) every
-> control path is still a dry run. The only control key the operator
-> writes directly is `/cmd/ant/<n>`; everything else goes through the
-> observatory's own audited dashboard routes. See `docs/OPERATOR_AGENT.md`.
+> **Status: Phase 4.** Everything in Phase 3 plus the **observing-plan
+> machinery**: dependency-light sidereal-time/transit math, a timed
+> declination schedule (built from explicit segments or transit-centred
+> sources), persisted in the operator etcd namespace, and a **plan runner**
+> that turns the active plan into `point_array` actions — *through the
+> same gate engine*, so a plan-driven move still obeys the lease, e-stop,
+> approval gate, and shadow/live rules. Live execution still fires only
+> when `mode: live` **and** the action is promoted in `config/local.yaml`;
+> the only control key written directly is `/cmd/ant/<n>`. See
+> `docs/OPERATOR_AGENT.md`.
 
 ## What this is NOT allowed to touch
 
@@ -44,6 +45,7 @@ logged.
 | `src/dsa_operator/audit/` | Append-only local log + etcd audit + Slack notify. |
 | `src/dsa_operator/agent/` | The Claude brain + deterministic stub fallback (read-only tools). |
 | `src/dsa_operator/control/` | Single-executor lease, gate engine, approvals, typed verbs, and the live executor (dashboard delegation + `/cmd/ant` pointing). |
+| `src/dsa_operator/observing/` | Sidereal/transit math, the observing-plan model + etcd persistence, and the plan runner (drives pointing via the engine). |
 | `src/dsa_operator/monitor/` | (later) local, non-LLM health/injection/recovery loops. |
 | `src/dsa_operator/web/` | Flask console + Google SSO + assistant chat (read-only). |
 | `config/policy.yaml` | Capability document as code (the approval gates). |

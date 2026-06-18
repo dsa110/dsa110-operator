@@ -3,10 +3,11 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 3** — read-only foundation +
-> web console + control gate engine + a **live executor graduated per
-> action**. Live fires only when `mode: live` AND the action is promoted
-> in `config/local.yaml`; defaults stay shadow.
+> so they can never drift.) **Status: Phase 4** — read-only foundation +
+> web console + control gate engine + live executor (graduated per action)
+> + the **observing-plan machinery** (transit math, timed dec schedule, and
+> a runner that drives pointing through the engine). Live fires only when
+> `mode: live` AND the action is promoted in `config/local.yaml`.
 
 ## 1. What the agent is
 
@@ -108,6 +109,29 @@ other than `chat`/`login`/`logout` (enforced by a test).
 * Act at all while globally **paused** (the e-stop): reads/Q&A continue,
   every mutating tool fails closed.
 
+### Observing plans (Phase 4)
+DSA-110 is a meridian transit instrument, so an observing plan is a timed
+schedule of **declinations**; a source is observable around its transit
+(when LST == RA). The plan lives in etcd at `/operator/plan/active`
+(operator namespace). Endpoints:
+
+* `GET /api/observability?dec=&ra=` — transit elevation, in-envelope?,
+  next transit time, current LST (read-only, any user).
+* `GET /api/plan` — the active plan + which segment is active now.
+* `POST /api/plan` — set a plan (executor only); body is either explicit
+  `segments` (`t_start`,`t_end`,`dec_deg`,`label`) or transit-centred
+  `sources` (`label`,`ra_deg`,`dec_deg`,`window_min`). Validated against the
+  pointing envelope.
+* `POST /api/plan/clear` — clear the plan (executor only).
+* `POST /api/plan/preview` — what the runner *would* do now (no engine call).
+* `POST /api/plan/tick` — run one step: the runner reads the active dec,
+  compares to `/mon/array/dec`, and if off-target issues `point_array`
+  **through the gate engine** (so during commissioning each plan-driven
+  move still needs approval, and nothing moves unless promoted to live).
+
+The agent also has read-only `get_observing_plan` and `get_observability`
+tools, so users can discuss the plan and observability conversationally.
+
 ## 5. Required monitoring (Phase 5 target)
 
 Continuously: fleet heartbeats (`/mon/service/*`), buffer health, RFI,
@@ -138,8 +162,10 @@ breaches. Cadences/thresholds are configured alongside the monitor loop.
 
 Phase 0 read-only foundation → 1 web + SSO + multi-user → **2 lease +
 policy engine + shadow mode (done)** → **3 graduated live control + live
-executor (done)** → 4 pointing helpers + conversational observing plan →
-5 autonomy + monitor/recovery loops. See the team chat design for detail.
+executor (done)** → **4 pointing helpers + observing plan + runner
+(done)** → 5 autonomy: background monitor/recovery loops + periodic
+injection health-checks + the runner on a cadence. See the team chat
+design for detail.
 
 Promotion to live is per-action: list a validated action under `promote:`
 in `config/local.yaml` to move it from its `commissioning` gate to its

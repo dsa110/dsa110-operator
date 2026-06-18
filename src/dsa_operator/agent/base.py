@@ -72,6 +72,17 @@ READONLY_TOOL_SPECS: list[ToolSpec] = [
     ToolSpec("query_injections", "Active injections, recent matches, and "
              "the C2 snapshot.",
              lambda t, a: t.query_injections()),
+    ToolSpec("get_observing_plan", "The active observing plan (a timed "
+             "schedule of declinations) and which segment is active now.",
+             lambda t, a: t.get_observing_plan()),
+    ToolSpec("get_observability", "For a declination (and optional RA): the "
+             "transit elevation, whether it's within the pointing envelope, "
+             "and the next transit time.",
+             lambda t, a: t.get_observability(
+                 float(a["dec_deg"]),
+                 float(a["ra_deg"]) if a.get("ra_deg") not in (None, "") else None),
+             {"dec_deg": "declination in degrees",
+              "ra_deg": "right ascension in degrees (optional)"}),
 ]
 
 TOOL_SPECS_BY_NAME = {s.name: s for s in READONLY_TOOL_SPECS}

@@ -41,6 +41,8 @@ read_only:
   - get_rfi_summary
   - get_sky_status
   - query_injections
+  - get_observing_plan
+  - get_observability
 
 # ---------------------------------------------------------------------------
 # Control actions. `target` = your stated steady-state goal; `commissioning`

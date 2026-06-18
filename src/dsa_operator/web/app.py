@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import time
 from typing import Any, Callable, Optional
 
 from flask import (
@@ -33,6 +34,9 @@ from dsa_operator.audit.log import AuditLog, AuditRecord
 from dsa_operator.control.approvals import ApprovalError, ApprovalStore
 from dsa_operator.control.engine import ControlEngine
 from dsa_operator.control.lease import ExecutorLease, new_session_id
+from dsa_operator.observing import astro
+from dsa_operator.observing.plan import ObservingPlan, PlanError, PlanStore
+from dsa_operator.observing.runner import PlanRunner
 from dsa_operator.policy import Policy, load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools, ToolError
 from dsa_operator.web.auth_google import AuthProvider, GoogleAuth
@@ -101,6 +105,8 @@ def create_app(
     agent: Optional[Agent] = None,
     audit: Optional[AuditLog] = None,
     control: Optional[ControlEngine] = None,
+    plan_store: Optional["PlanStore"] = None,
+    read_etcd: Optional[Any] = None,
     secret_key: Optional[str] = None,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
@@ -117,6 +123,15 @@ def create_app(
     tools_factory = tools_factory or _default_tools_factory(audit)
     agent = agent or build_default_agent()
     control = control if control is not None else _default_control_engine(audit)
+
+    # Plan machinery (Phase 4). Reuses the engine's operator-namespace writer
+    # and a read-only etcd facade. Built by default; injectable for tests.
+    if read_etcd is None:
+        from dsa_operator.etcd.read import connect_readonly
+        read_etcd = connect_readonly(port=int(os.environ.get(
+            "DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT)))
+    if plan_store is None:
+        plan_store = PlanStore(control._writer, read_etcd)  # type: ignore[attr-defined]
 
     # -- auth helpers ---------------------------------------------------------
     def current_user() -> Optional[str]:
@@ -382,9 +397,101 @@ def create_app(
         ok = control.resume(user)
         return jsonify({"ok": ok, "paused": control.is_paused()})
 
+    # -- observing plan (Phase 4) ---------------------------------------------
+    @app.route("/api/observability")
+    def api_observability():
+        require_user()
+        try:
+            dec = float(request.args["dec"])
+        except (KeyError, ValueError):
+            return jsonify({"ok": False, "error": "dec (deg) is required"}), 400
+        ra = request.args.get("ra", type=float)
+        pt = control.policy.pointing
+        obs = astro.observability(
+            dec, ra_deg=ra, now_unix=time.time(),
+            el_min=float(pt.get("el_min_deg", 30.0)),
+            el_max=float(pt.get("el_max_deg", 125.0)),
+            lat_deg=float(pt.get("lat_ovro_deg", astro.OVRO_LAT_DEG)))
+        return jsonify({"ok": True, "data": obs.to_json()})
+
+    @app.route("/api/plan")
+    def api_plan_get():
+        require_user()
+        plan = plan_store.get()
+        if plan is None:
+            return jsonify({"ok": True, "data": {"plan": None}})
+        now = time.time()
+        active = plan.active_at(now)
+        nxt = plan.next_segment(now)
+        return jsonify({"ok": True, "data": {
+            "plan": plan.to_json(),
+            "active_now": active.to_json() if active else None,
+            "dec_now": plan.dec_at(now),
+            "next_segment": nxt.to_json() if nxt else None,
+            "lst_now_deg": round(astro.lst_deg(now), 4),
+        }})
+
+    def _require_executor():
+        if not control.lease.held_by(current_sid()):
+            abort(403)
+
+    @app.route("/api/plan", methods=["POST"])
+    def api_plan_set():
+        user = require_user()
+        _require_executor()
+        body = request.get_json(silent=True) or {}
+        pt = control.policy.pointing
+        kw = dict(el_min=float(pt.get("el_min_deg", 30.0)),
+                  el_max=float(pt.get("el_max_deg", 125.0)),
+                  lat_deg=float(pt.get("lat_ovro_deg", astro.OVRO_LAT_DEG)))
+        try:
+            if body.get("sources"):
+                plan = ObservingPlan.from_sources(
+                    body["sources"], after_unix=time.time(), created_by=user,
+                    default_window_min=float(body.get("window_min", 30.0)),
+                    note=str(body.get("note", "")))
+            else:
+                plan = ObservingPlan.from_segments(
+                    body.get("segments", []), created_by=user,
+                    note=str(body.get("note", "")))
+            plan.validate(**kw)
+        except (PlanError, KeyError, ValueError, TypeError) as exc:
+            return jsonify({"ok": False, "error": f"invalid plan: {exc}"}), 400
+        plan_store.set(plan)
+        audit.record(AuditRecord(action="set_observing_plan", kind="control",
+                                 actor=user, mode="live",
+                                 params={"n_segments": len(plan.segments)}))
+        return jsonify({"ok": True, "data": {"n_segments": len(plan.segments),
+                                             "plan": plan.to_json()}})
+
+    @app.route("/api/plan/clear", methods=["POST"])
+    def api_plan_clear():
+        user = require_user()
+        _require_executor()
+        plan_store.clear()
+        audit.record(AuditRecord(action="clear_observing_plan", kind="control",
+                                 actor=user, mode="live"))
+        return jsonify({"ok": True})
+
+    @app.route("/api/plan/tick", methods=["POST"])
+    def api_plan_tick():
+        user = require_user()
+        _require_executor()
+        runner = PlanRunner(control, plan_store, read_etcd,
+                            actor=user, session_id=current_sid())
+        result = runner.apply()
+        return jsonify({"ok": True, "data": result.to_json()})
+
+    @app.route("/api/plan/preview", methods=["POST", "GET"])
+    def api_plan_preview():
+        user = require_user()
+        runner = PlanRunner(control, plan_store, read_etcd,
+                            actor=user, session_id=current_sid())
+        return jsonify({"ok": True, "data": runner.decide().to_json()})
+
     @app.route("/healthz")
     def healthz():
-        return jsonify({"ok": True, "phase": 2, "authed": bool(current_user())})
+        return jsonify({"ok": True, "phase": 4, "authed": bool(current_user())})
 
     return app
 

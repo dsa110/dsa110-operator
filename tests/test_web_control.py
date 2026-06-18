@@ -23,6 +23,22 @@ def _dash_getter(url, timeout):
     return {"ok": True}
 
 
+class _SharedStore:
+    """One dict backing both PlanStore writer + reader (prod shares one etcd)."""
+
+    def __init__(self):
+        self._d = {}
+
+    def put(self, key, value, lease_id=None):
+        self._d[key] = value
+
+    def delete(self, key):
+        self._d.pop(key, None)
+
+    def get_dict(self, key):
+        return self._d.get(key)
+
+
 @pytest.fixture()
 def ctx(tmp_path):
     audit = AuditLog(tmp_path / "audit")
@@ -31,10 +47,14 @@ def ctx(tmp_path):
                            ApprovalStore(), audit, writer=writer)
     etcd = ReadOnlyEtcd(FakeEtcdReader({}))
     dash = DashboardClient(getter=_dash_getter)
+    from dsa_operator.observing.plan import PlanStore
+    shared = _SharedStore()
     app = create_app(
         auth=FakeAuth(email="alice@dsa110.org"),
         tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
-        agent=StubAgent(), audit=audit, control=engine, secret_key="t",
+        agent=StubAgent(), audit=audit, control=engine,
+        read_etcd=etcd, plan_store=PlanStore(shared, shared),
+        secret_key="t",
     )
     app.config.update(TESTING=True)
     return app, engine
@@ -126,6 +146,53 @@ def test_policy_endpoint_lists_gates(ctx):
     assert data["mode"] == "shadow"
     assert data["actions"]["update_fleet_code"]["gate"] == "approval"
     assert data["actions"]["set_policy"]["two_person"] is True
+
+
+def test_observability_endpoint(ctx):
+    app, _ = ctx
+    c = app.test_client()
+    _login(c)
+    j = c.get("/api/observability?dec=33&ra=50").get_json()["data"]
+    assert j["observable"] is True
+    assert j["transit_el_deg"] == pytest.approx(85.77, abs=0.01)
+
+
+def test_plan_set_requires_lease(ctx):
+    app, _ = ctx
+    c = app.test_client()
+    _login(c)
+    # no lease yet -> 403
+    r = c.post("/api/plan", json={"segments": [
+        {"t_start": 0, "t_end": 100, "dec_deg": 33.0, "label": "a"}]})
+    assert r.status_code == 403
+
+
+def test_plan_set_get_and_tick(ctx):
+    app, engine = ctx
+    c = app.test_client()
+    _login(c)
+    c.post("/api/lease/acquire")
+    r = c.post("/api/plan", json={"segments": [
+        {"t_start": 0, "t_end": 2_000_000_000_000, "dec_deg": 44.0, "label": "a"}]})
+    assert r.get_json()["data"]["n_segments"] == 1
+    got = c.get("/api/plan").get_json()["data"]
+    assert got["plan"]["segments"][0]["dec_deg"] == 44.0
+    # tick -> point_array through the engine. point_array is approval-gated
+    # during commissioning, so a plan-driven move still needs human approval.
+    t = c.post("/api/plan/tick").get_json()["data"]
+    assert t["decision"]["action"] == "point_array"
+    assert t["decision"]["outcome"] == "needs_approval"
+
+
+def test_plan_rejects_bad_envelope(ctx):
+    app, _ = ctx
+    c = app.test_client()
+    _login(c)
+    c.post("/api/lease/acquire")
+    r = c.post("/api/plan", json={"segments": [
+        {"t_start": 0, "t_end": 100, "dec_deg": -40.0, "label": "south"}]})
+    assert r.status_code == 400
+    assert "invalid plan" in r.get_json()["error"]
 
 
 def test_takeover_switches_holder(ctx):

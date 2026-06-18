@@ -197,6 +197,52 @@ class ReadOnlyTools:
             result["c2_snapshot"] = {"error": str(exc)}
         return self._ok("query_injections", {}, result)
 
+    def get_observing_plan(self) -> dict[str, Any]:
+        """The active observing plan (operator namespace) + what's active now."""
+        import time as _time
+
+        from dsa_operator.observing.plan import PLAN_KEY, ObservingPlan
+
+        self._guard("get_observing_plan")
+        raw = self._etcd.get_dict(PLAN_KEY)
+        if not isinstance(raw, dict) or not raw.get("segments"):
+            return self._ok("get_observing_plan", {}, {"plan": None})
+        plan = ObservingPlan.from_json(raw)
+        now = _time.time()
+        active = plan.active_at(now)
+        nxt = plan.next_segment(now)
+        result = {
+            "plan": plan.to_json(),
+            "n_segments": len(plan.segments),
+            "active_now": active.to_json() if active else None,
+            "dec_now": plan.dec_at(now),
+            "next_segment": nxt.to_json() if nxt else None,
+        }
+        return self._ok("get_observing_plan", {}, result)
+
+    def get_observability(self, dec_deg: float,
+                          ra_deg: Optional[float] = None) -> dict[str, Any]:
+        """Transit elevation / next-transit / observability for a dec (+optional RA)."""
+        from dsa_operator.observing import astro
+
+        params = {"dec_deg": dec_deg, "ra_deg": ra_deg}
+        self._guard("get_observability", params)
+        try:
+            dec = float(dec_deg)
+            ra = float(ra_deg) if ra_deg is not None else None
+        except (TypeError, ValueError):
+            raise ToolError("dec_deg (and ra_deg if given) must be numbers")
+        pt = self._policy.pointing
+        import time as _time
+
+        obs = astro.observability(
+            dec, ra_deg=ra, now_unix=_time.time(),
+            el_min=float(pt.get("el_min_deg", 30.0)),
+            el_max=float(pt.get("el_max_deg", 125.0)),
+            lat_deg=float(pt.get("lat_ovro_deg", astro.OVRO_LAT_DEG)),
+        )
+        return self._ok("get_observability", params, obs.to_json())
+
 
 def _demo(argv: Optional[list[str]] = None) -> int:
     """Live read-only smoke against the tunnel-forwarded services."""

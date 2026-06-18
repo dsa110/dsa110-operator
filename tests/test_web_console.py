@@ -24,6 +24,11 @@ def _fake_engine(audit):
     return ControlEngine(load_policy(), ExecutorLease(writer),
                          ApprovalStore(), audit, writer=writer)
 
+
+def _fake_plan_store(engine, read_etcd):
+    from dsa_operator.observing.plan import PlanStore
+    return PlanStore(engine._writer, read_etcd)
+
 ETCD_SEED = {
     "/mon/service/corr_rt/3": {"alive": True},
     "/mon/array/dec": {"dec_deg": 54.5},
@@ -57,12 +62,15 @@ def app(tmp_path):
     def tools_factory(actor):
         return ReadOnlyTools(etcd, dash, audit, actor=actor)
 
+    engine = _fake_engine(audit)
     application = create_app(
         auth=FakeAuth(email="alice@dsa110.org"),
         tools_factory=tools_factory,
         agent=StubAgent(),
         audit=audit,
-        control=_fake_engine(audit),
+        control=engine,
+        read_etcd=etcd,
+        plan_store=_fake_plan_store(engine, etcd),
         secret_key="test-secret",
     )
     application.config.update(TESTING=True)
@@ -119,10 +127,12 @@ def test_login_denied_when_not_authorized(tmp_path):
     audit = AuditLog(tmp_path / "audit")
     etcd = ReadOnlyEtcd(FakeEtcdReader(ETCD_SEED))
     dash = DashboardClient(getter=_fake_getter)
+    engine = _fake_engine(audit)
     app = create_app(
         auth=Deny(email="mallory@evil.com"),
         tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
-        agent=StubAgent(), audit=audit, control=_fake_engine(audit),
+        agent=StubAgent(), audit=audit, control=engine,
+        read_etcd=etcd, plan_store=_fake_plan_store(engine, etcd),
         secret_key="x",
     )
     c = app.test_client()
@@ -203,6 +213,8 @@ def test_mutating_routes_are_exactly_the_known_set(app):
         "/api/lease/acquire", "/api/lease/release", "/api/lease/takeover",
         "/api/control", "/api/approvals/request",
         "/api/approvals/<approval_id>/grant", "/api/pause", "/api/resume",
+        # Phase 4 observing plan (lease-gated; pointing still flows the engine):
+        "/api/plan", "/api/plan/clear", "/api/plan/tick", "/api/plan/preview",
     }
     found = set()
     for rule in app.url_map.iter_rules():
