@@ -15,8 +15,16 @@ an etcd lease. Risky/irreversible actions are gated by a human-readable,
 machine-enforced **policy** (`config/policy.yaml`), and **everything** is
 logged.
 
-> **Status: Phase 5.** Everything in Phase 4 plus the **autonomy
-> supervisor**: a deterministic, non-LLM loop (`src/dsa_operator/monitor/`)
+> **Status: Phase 6.** Everything in Phase 5 plus a **controlling Claude
+> brain**: the web chat now hands the agent an `AgentControl` surface so it
+> can *propose and run* control actions (`propose_action`), *request* (never
+> grant) approvals, and drive the observing plan conversationally — every
+> call funnelled through the same `ControlEngine` gauntlet (lease, dashboard
+> lockout, e-stop, gate, approval, shadow/live), so handing the model these
+> tools changes *who can ask*, never *what is allowed*.
+>
+> Phase 5 added the **autonomy supervisor**: a deterministic, non-LLM loop
+> (`src/dsa_operator/monitor/`)
 > that continuously assesses **health** (fleet, static-sky, SEFD,
 > observation-time cap) and alerts on edge-triggered changes; optionally
 > **auto-recovers** known failures, runs periodic **injection

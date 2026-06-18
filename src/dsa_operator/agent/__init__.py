@@ -10,8 +10,13 @@ implementations ship:
   tool. Used in dev/CI and whenever the SDK or API key is absent, so
   monitoring + Q&A always work.
 
-In Phase 1 the agent is given only the **read-only** tool surface; it can
-observe and answer, never control.
+The agent always has the **read-only** tool surface. From Phase 6 the web
+chat also hands it an :class:`~dsa_operator.agent.control.AgentControl`
+surface, so it can *propose and run* control actions and drive the
+observing plan — but every such call funnels through the same
+``ControlEngine`` gauntlet (lease, dashboard lockout, e-stop, gate,
+approval, shadow/live), so the agent can never exceed the policy a human
+could enforce in the console.
 """
 from __future__ import annotations
 

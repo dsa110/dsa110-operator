@@ -19,7 +19,8 @@ import os
 from typing import Any
 
 from dsa_operator.agent.base import TOOL_SPECS_BY_NAME, AgentResponse, ToolCall
-from dsa_operator.agent.context import SYSTEM_PROMPT, tool_schema_json
+from dsa_operator.agent.context import system_prompt, tool_schema_json
+from dsa_operator.agent.control import CONTROL_SPECS_BY_NAME
 from dsa_operator.tools.readonly import ReadOnlyTools
 
 LOG = logging.getLogger("dsa_operator.agent.claude")
@@ -43,20 +44,23 @@ class ClaudeAgent:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self._client = anthropic.Anthropic()
         self.model = model
-        self._tools = tool_schema_json()
 
     def chat(
         self, message: str, *, actor: str, tools: ReadOnlyTools,
+        control: Any = None,
     ) -> AgentResponse:
         messages: list[dict[str, Any]] = [{"role": "user", "content": message}]
         calls: list[ToolCall] = []
+        control_enabled = control is not None
+        tool_schemas = tool_schema_json(include_control=control_enabled)
+        prompt = system_prompt(control_enabled=control_enabled)
 
         for _ in range(MAX_TOOL_ITERS):
             resp = self._client.messages.create(
                 model=self.model,
                 max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=self._tools,
+                system=prompt,
+                tools=tool_schemas,
                 messages=messages,
             )
             if resp.stop_reason != "tool_use":
@@ -70,7 +74,7 @@ class ClaudeAgent:
             for block in resp.content:
                 if getattr(block, "type", "") != "tool_use":
                     continue
-                call, payload = self._run_tool(block, tools)
+                call, payload = self._run_tool(block, tools, control)
                 calls.append(call)
                 tool_results.append({
                     "type": "tool_result",
@@ -85,17 +89,23 @@ class ClaudeAgent:
             tool_calls=calls, model=self.model,
         )
 
-    def _run_tool(self, block: Any, tools: ReadOnlyTools) -> tuple[ToolCall, Any]:
+    def _run_tool(self, block: Any, tools: ReadOnlyTools,
+                  control: Any) -> tuple[ToolCall, Any]:
         name = block.name
         args = dict(block.input or {})
         call = ToolCall(name=name, args=args)
         spec = TOOL_SPECS_BY_NAME.get(name)
-        if spec is None:
+        if spec is not None:
+            target, invoke = tools, spec.invoke
+        elif control is not None and name in CONTROL_SPECS_BY_NAME:
+            cspec = CONTROL_SPECS_BY_NAME[name]
+            target, invoke = control, cspec.invoke
+        else:
             call.ok = False
             call.error = f"unknown tool {name}"
             return call, {"error": call.error}
         try:
-            return call, spec.invoke(tools, args)
+            return call, invoke(target, args)
         except Exception as exc:                           # noqa: BLE001
             call.ok = False
             call.error = str(exc)

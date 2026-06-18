@@ -3,11 +3,12 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 5** — read-only foundation +
+> so they can never drift.) **Status: Phase 6** — read-only foundation +
 > web console + control gate engine + live executor (graduated per action)
-> + observing-plan machinery + the **autonomy supervisor** (standing
-> health/recovery/injection/plan loops). Live fires only when
-> `mode: live` AND the action is promoted in `config/local.yaml`.
+> + observing-plan machinery + autonomy supervisor + a **controlling Claude
+> brain** (the chat agent can propose/run gated actions and drive the
+> plan). Live fires only when `mode: live` AND the action is promoted in
+> `config/local.yaml`.
 
 ## 1. What the agent is
 
@@ -45,6 +46,26 @@ Pointing the array (dec → elevation), starting/stopping/reconfiguring
 observing, arming/disarming recording, firing injections + calibration,
 C2 dump controls, fringe-stop table build/deploy, and (always
 human-approved) fleet code updates.
+
+### Conversational control via the Claude brain (Phase 6)
+In the web chat, the agent is handed an `AgentControl` surface bound to the
+signed-in identity **and** that session's lease. Tools:
+
+* `list_control_actions` / `lease_status` — what it can do, and whether this
+  session is the executor.
+* `propose_action(action, params)` — the **only** way it acts; runs the
+  gate engine and returns `denied` / `needs_approval` / `shadow` /
+  `executed`. The agent reports the outcome verbatim.
+* `request_approval(action, params)` — register a pending approval. The
+  agent can **request but never grant**; a human grants in the console.
+* `set_observing_plan` / `preview_plan` / `tick_plan` / `clear_plan` — run
+  a daily plan conversationally (executor only; pointing still flows the
+  engine).
+
+This changes *who can ask*, never *what is allowed*: a prompt-injected or
+confused agent is still bound by lease, dashboard lockout, e-stop, gate,
+approval, and shadow/live promotion. Non-executor users' chats can propose
+but every mutating call returns `denied`.
 
 Each verb runs the full gauntlet — lease → e-stop → gate → approval →
 parameter validation — and then either renders the exact writes it would
@@ -225,9 +246,11 @@ Phase 0 read-only foundation → 1 web + SSO + multi-user → **2 lease +
 policy engine + shadow mode (done)** → **3 graduated live control + live
 executor (done)** → **4 pointing helpers + observing plan + runner
 (done)** → **5 autonomy: standing health/recovery/injection loops + the
-runner on a cadence, all gated through the engine (done)**. Next:
-graduate actions to live via `promote:` as each is validated, and expand
-the recovery playbook + health thresholds from operational experience.
+runner on a cadence, all gated through the engine (done)** → **6
+controlling Claude brain: the chat agent proposes/runs gated actions and
+drives the plan conversationally (done)**. Next: graduate actions to live
+via `promote:` as each is validated, and expand the recovery playbook +
+health thresholds from operational experience.
 
 Promotion to live is per-action: list a validated action under `promote:`
 in `config/local.yaml` to move it from its `commissioning` gate to its

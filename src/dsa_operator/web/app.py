@@ -278,10 +278,17 @@ def create_app(
         if not message:
             return jsonify({"ok": False, "error": "empty message"}), 400
         tools = tools_factory(user)
+        # Phase 6: hand the agent a control surface bound to THIS identity +
+        # session. The engine still enforces lease/lockout/e-stop/gate, so a
+        # non-executor's chat can propose but not execute.
+        from dsa_operator.agent.control import AgentControl
+        control_surface = AgentControl(control, plan_store, read_etcd,
+                                       actor=user, session_id=current_sid())
         audit.record(AuditRecord(action="chat", kind="read", actor=user,
                                  params={"message": message}))
         try:
-            resp = agent.chat(message, actor=user, tools=tools)
+            resp = agent.chat(message, actor=user, tools=tools,
+                              control=control_surface)
         except Exception as exc:                           # noqa: BLE001
             LOG.exception("agent chat failed")
             return jsonify({"ok": False, "error": str(exc)}), 502

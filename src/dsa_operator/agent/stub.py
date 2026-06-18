@@ -40,7 +40,19 @@ class StubAgent:
 
     def chat(
         self, message: str, *, actor: str, tools: ReadOnlyTools,
+        control: Any = None,
     ) -> AgentResponse:
+        # Phase 6: when a control surface is present, route obvious control
+        # intents deterministically. The stub never *executes* anything risky
+        # on its own initiative — it reports lease/capabilities so a human can
+        # drive; the real planning is the Claude brain's job.
+        if control is not None:
+            m = message.lower()
+            if "lease" in m or "in charge" in m or "who controls" in m:
+                return self._control_call(control, "lease_status", message)
+            if "what can you" in m and ("control" in m or "do" in m or "run" in m):
+                return self._control_call(control, "list_control_actions", message)
+
         tool_name = _route(message)
         call = ToolCall(name=tool_name)
         try:
@@ -57,6 +69,20 @@ class StubAgent:
             f"queried `{tool_name}`:\n\n```json\n"
             f"{json.dumps(result, indent=2, default=str)[:1500]}\n```"
         )
+        return AgentResponse(text=text, tool_calls=[call], model=self.model)
+
+    def _control_call(self, control: Any, name: str, message: str) -> AgentResponse:
+        from dsa_operator.agent.control import CONTROL_SPECS_BY_NAME
+        call = ToolCall(name=name)
+        try:
+            result = CONTROL_SPECS_BY_NAME[name].invoke(control, {})
+        except Exception as exc:                               # noqa: BLE001
+            call.ok = False
+            call.error = str(exc)
+            return AgentResponse(text=f"(stub) couldn't run {name}: {exc}",
+                                 tool_calls=[call], model=self.model)
+        text = (f"(stub agent — no LLM configured) `{name}`:\n\n```json\n"
+                f"{json.dumps(result, indent=2, default=str)[:1500]}\n```")
         return AgentResponse(text=text, tool_calls=[call], model=self.model)
 
 

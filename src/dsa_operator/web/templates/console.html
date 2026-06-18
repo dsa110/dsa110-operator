@@ -35,7 +35,7 @@
 </head>
 <body>
   <header>
-    <div><strong>DSA-110 Operator</strong> <span class="ro">READ-ONLY · monitoring</span></div>
+    <div><strong>DSA-110 Operator</strong> <span class="ro" id="mode-badge">monitoring</span></div>
     <div class="who">{{ user }} · agent: {{ agent_model }} · <a href="/logout" style="color:#74b9ff;">sign out</a></div>
   </header>
 
@@ -55,21 +55,27 @@
     </div>
 
     <div class="card">
-      <h3>Notes</h3>
+      <h3>Executor lease</h3>
       <p style="color:var(--mut); font-size:13px;">
-        This console is read-only. Ask the assistant anything about the
-        current system state; it queries live monitoring on your behalf and
-        every query is logged under your identity. Control actions
-        (pointing, start/stop, injections) arrive in a later phase behind a
-        single-executor lease and approval gates.
+        Anyone may <em>watch and ask</em>. Only the <strong>one</strong>
+        session holding the executor lease may run control actions — and
+        even then every action passes the policy gates (autonomous /
+        human-approval), the dashboard lockout, and the e-stop. Acquire the
+        lease to let the assistant act on your behalf.
       </p>
+      <div class="row">
+        <button onclick="acquireLease()">Acquire</button>
+        <button onclick="releaseLease()">Release</button>
+        <button onclick="refreshLease()">Refresh status</button>
+      </div>
+      <pre id="lease">lease status…</pre>
     </div>
 
     <div class="card chat">
       <h3>Ask the operator assistant</h3>
       <div id="log"></div>
       <form class="ask" onsubmit="return ask(event)">
-        <input id="q" placeholder="e.g. where is the array pointing? are all nodes up?" autocomplete="off" />
+        <input id="q" placeholder="e.g. point to dec 44; or: are all nodes up?" autocomplete="off" />
         <button type="submit">Ask</button>
       </form>
     </div>
@@ -99,6 +105,30 @@ function add(cls, text, tools) {
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
 }
+async function refreshLease() {
+  const el = document.getElementById("lease");
+  try {
+    const r = await fetch("/api/lease");
+    const j = await r.json();
+    const d = j.data || j;
+    el.textContent = JSON.stringify(d, null, 2);
+    const badge = document.getElementById("mode-badge");
+    if (d && d.you_hold_it) { badge.textContent = "EXECUTOR · control enabled"; }
+    else { badge.textContent = "monitoring"; }
+  } catch (e) { el.textContent = "error: " + e; }
+}
+async function _leasePost(path) {
+  const el = document.getElementById("lease");
+  try {
+    const r = await fetch(path, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: "{}"});
+    const j = await r.json();
+    el.textContent = JSON.stringify(j.data || j, null, 2);
+  } catch (e) { el.textContent = "error: " + e; }
+  refreshLease();
+}
+function acquireLease() { _leasePost("/api/lease/acquire"); }
+function releaseLease() { _leasePost("/api/lease/release"); }
 async function ask(ev) {
   ev.preventDefault();
   const q = document.getElementById("q");
@@ -120,6 +150,7 @@ async function ask(ev) {
   } catch (e) { placeholder.remove(); add("bot", "error: " + e); }
   return false;
 }
+refreshLease();
 </script>
 </body>
 </html>

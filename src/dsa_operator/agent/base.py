@@ -29,8 +29,13 @@ class AgentResponse:
 class Agent(Protocol):
     def chat(
         self, message: str, *, actor: str, tools: ReadOnlyTools,
+        control: Any = None,
     ) -> AgentResponse:
-        """Answer ``message`` on behalf of ``actor`` using ``tools``."""
+        """Answer ``message`` on behalf of ``actor`` using ``tools``.
+
+        ``control`` is an optional ``AgentControl`` surface (Phase 6); when
+        provided the agent may also propose/run gated control actions.
+        """
         ...
 
 
