@@ -3,10 +3,10 @@
 > **This document is the human-readable face of `config/policy.yaml`.**
 > The gates below are enforced by code; the prose must match the file.
 > (A later phase generates the capability tables directly from the policy
-> so they can never drift.) **Status: Phase 4** — read-only foundation +
+> so they can never drift.) **Status: Phase 5** — read-only foundation +
 > web console + control gate engine + live executor (graduated per action)
-> + the **observing-plan machinery** (transit math, timed dec schedule, and
-> a runner that drives pointing through the engine). Live fires only when
+> + observing-plan machinery + the **autonomy supervisor** (standing
+> health/recovery/injection/plan loops). Live fires only when
 > `mode: live` AND the action is promoted in `config/local.yaml`.
 
 ## 1. What the agent is
@@ -132,12 +132,34 @@ schedule of **declinations**; a source is observable around its transit
 The agent also has read-only `get_observing_plan` and `get_observability`
 tools, so users can discuss the plan and observability conversationally.
 
-## 5. Required monitoring (Phase 5 target)
+## 5. Autonomy supervisor (Phase 5)
 
-Continuously: fleet heartbeats (`/mon/service/*`), buffer health, RFI,
-SEFDs, sky-monitor freshness, C2 liveness, and injection match rate.
-Periodically fire injection health-checks. Alert to Slack on threshold
-breaches. Cadences/thresholds are configured alongside the monitor loop.
+A deterministic, non-LLM loop (`src/dsa_operator/monitor/`) provides the
+unprompted behaviours. The unit of work is one **tick**; a standing
+executor runs the loop with `python -m dsa_operator.monitor.supervisor`
+(which acquires the lease as session `supervisor`).
+
+**Loops** (all configured under `autonomy:` in `config/policy.yaml`, all
+**off by default**):
+
+| Loop | Flag | What it does |
+| --- | --- | --- |
+| Health monitor | always on when `enabled` | Polls fleet, static-sky freshness, SEFD freshness, and the observation-time cap; rolls up `ok`/`warn`/`alert` findings; edge-triggered Slack alert on newly-appearing alert codes (no per-tick spam). Read-only. |
+| Auto-recovery | `auto_recover` | For known, reversible failure signatures (e.g. search nodes down → `bounce_search`) submits the fix **through the gate engine**. Correlator-down / overrun have no safe auto-remedy and stay alerts. |
+| Injection health-check | `injection_health_check` | Fires a synthetic FRB through `fire_injection`, then after `injection_verify_after_s` checks the match count rose — a true end-to-end pulse test. |
+| Plan runner | `run_plan` | Ticks the observing-plan runner (§4) on `plan_s` cadence. |
+
+**Gating.** Monitoring is read-only and runs whenever the supervisor is
+`enabled`. The three mutating loops act only when their flag is set **and**
+this session holds the lease **and** `agents_enabled` (dashboard) **and**
+the e-stop is clear — and even then every action runs the full gate engine,
+so during commissioning a "recovery" or plan move surfaces as
+`needs_approval` and is logged, not executed.
+
+Endpoints: `GET /api/autonomy` (status: enabled flags, cadences, active
+alerts, last tick) and `POST /api/autonomy/tick` (force a monitor refresh;
+from the web the mutating loops stay gated unless the supervisor session
+holds the lease). Everything the supervisor does is audited.
 
 ## 6. Troubleshooting playbook (seeded; expand as we learn)
 
@@ -164,10 +186,15 @@ enable itself, re-point the executor, or extend its own time limit.
 
 Operator side (this build): `GET /api/authority` shows the asserted
 authority; `GET /api/observation` shows armed/elapsed/overrun vs the cap;
-lease acquisition and every control attempt honour the lockout and pin. A
-**truly strict** time limit also wants a watchdog inside `dsart_rt`'s
-`utc_start` handler that auto-`utc_stop`s after `max_obs_seconds`
-regardless of the agent — that part lands on a dsa110-rt branch.
+lease acquisition and every control attempt honour the lockout and pin.
+
+The **truly strict** time limit is enforced independently of the agent by a
+watchdog inside `dsart_rt`: `utc_start` records when this orchestrator armed
+recording, and the mon loop auto-`utc_stop`s once the elapsed time exceeds
+`/cmd/operator/control.max_obs_seconds` (cached ~15 s, fail-open, no-op when
+unset). So even a runaway or crashed agent cannot exceed the cap. The
+dashboard UI to set these fields and the watchdog ship on the dsa110-rt
+`operator-integration` branch.
 
 ## 6c. The Claude account / API key
 
@@ -197,9 +224,10 @@ falls back to the stub agent.
 Phase 0 read-only foundation → 1 web + SSO + multi-user → **2 lease +
 policy engine + shadow mode (done)** → **3 graduated live control + live
 executor (done)** → **4 pointing helpers + observing plan + runner
-(done)** → 5 autonomy: background monitor/recovery loops + periodic
-injection health-checks + the runner on a cadence. See the team chat
-design for detail.
+(done)** → **5 autonomy: standing health/recovery/injection loops + the
+runner on a cadence, all gated through the engine (done)**. Next:
+graduate actions to live via `promote:` as each is validated, and expand
+the recovery playbook + health thresholds from operational experience.
 
 Promotion to live is per-action: list a validated action under `promote:`
 in `config/local.yaml` to move it from its `commissioning` gate to its

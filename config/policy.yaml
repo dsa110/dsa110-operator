@@ -89,6 +89,36 @@ actions:
   set_policy:            { target: approval,   commissioning: approval,
                            reversible: false, note: "Editing this policy. Two-person." }
 
+# ---------------------------------------------------------------------------
+# Autonomy (Phase 5). The standing local supervisor runs deterministic,
+# non-LLM loops: health monitoring, optional auto-recovery, periodic
+# injection health-checks, and ticking the observing-plan runner.
+#
+# Every loop is OFF by default. Monitoring (read-only health + alerting)
+# runs whenever the supervisor is `enabled`; the three *mutating* loops
+# (auto_recover / injection_health_check / run_plan) only act when their
+# own flag is set AND the session holds the executor lease AND the
+# dashboard hasn't locked agents out AND the e-stop isn't engaged. Every
+# mutation still goes through the full ControlEngine gauntlet, so during
+# commissioning a "recovery" or plan move surfaces as needs_approval
+# rather than executing.
+# ---------------------------------------------------------------------------
+autonomy:
+  enabled: false               # master switch for the supervisor loops
+  auto_recover: false          # submit known-failure recoveries through the gate
+  injection_health_check: false  # fire periodic injection probes + verify detection
+  run_plan: false              # tick the observing-plan runner
+  intervals:
+    health_s: 60               # health-monitor cadence
+    injection_s: 3600          # periodic injection-probe cadence
+    plan_s: 30                 # plan-runner tick cadence
+  thresholds:
+    fleet_min_corr: 16         # alert if fewer corr nodes report
+    fleet_min_search: 16       # alert if fewer search nodes report
+    sky_frame_max_age_s: 300   # warn if the static-sky frame is staler than this
+    sefd_max_age_s: 3600       # warn if the SEFD scan is staler than this
+    injection_verify_after_s: 180  # wait this long before checking a probe landed
+
 # Pointing safety envelope (correctness, not safety — antennas are safe by
 # design). Commands outside this elevation range are refused by the tool
 # layer to avoid sending invalid drive values.

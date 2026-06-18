@@ -34,6 +34,8 @@ from dsa_operator.audit.log import AuditLog, AuditRecord
 from dsa_operator.control.approvals import ApprovalError, ApprovalStore
 from dsa_operator.control.engine import ControlEngine
 from dsa_operator.control.lease import ExecutorLease, new_session_id
+from dsa_operator.monitor.injection import InjectionHealthCheck
+from dsa_operator.monitor.supervisor import AutonomyConfig, AutonomySupervisor
 from dsa_operator.observing import astro
 from dsa_operator.observing.plan import ObservingPlan, PlanError, PlanStore
 from dsa_operator.observing.runner import PlanRunner
@@ -133,6 +135,26 @@ def create_app(
             "DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT)))
     if plan_store is None:
         plan_store = PlanStore(control._writer, read_etcd)  # type: ignore[attr-defined]
+
+    # Autonomy supervisor (Phase 5). One app-level instance so its health /
+    # alert state persists across ticks. Bound to the "supervisor" session:
+    # in the web deployment that session never holds the executor lease, so
+    # its monitoring loop runs but its mutating loops are gated out (a real
+    # standing executor runs `python -m dsa_operator.monitor.supervisor`,
+    # which acquires the lease as "supervisor"). All loops are OFF unless
+    # enabled in config/policy.yaml.
+    _SUP_SID = "supervisor"
+    sup_tools = tools_factory("agent")
+    sup_runner = PlanRunner(control, plan_store, read_etcd,
+                            actor="agent", session_id=_SUP_SID)
+    sup_cfg = AutonomyConfig.from_policy(control.policy)
+    supervisor = AutonomySupervisor(
+        control, sup_tools, audit, sup_cfg,
+        plan_runner=sup_runner,
+        injection=InjectionHealthCheck(control, sup_tools, audit,
+                                       actor="agent", session_id=_SUP_SID,
+                                       verify_after_s=sup_cfg.verify_after_s),
+        actor="agent", session_id=_SUP_SID)
 
     # -- auth helpers ---------------------------------------------------------
     def current_user() -> Optional[str]:
@@ -510,9 +532,24 @@ def create_app(
                             actor=user, session_id=current_sid())
         return jsonify({"ok": True, "data": runner.decide().to_json()})
 
+    # -- autonomy supervisor (Phase 5) ----------------------------------------
+    @app.route("/api/autonomy")
+    def api_autonomy():
+        require_user()
+        return jsonify({"ok": True, "data": supervisor.status()})
+
+    @app.route("/api/autonomy/tick", methods=["POST"])
+    def api_autonomy_tick():
+        """Force one supervisor tick. Monitoring always runs; the mutating
+        loops only act if the supervisor session holds the lease (so from
+        the web this is effectively a monitor-only refresh)."""
+        require_user()
+        tick = supervisor.tick()
+        return jsonify({"ok": True, "data": tick.to_json()})
+
     @app.route("/healthz")
     def healthz():
-        return jsonify({"ok": True, "phase": 4, "authed": bool(current_user())})
+        return jsonify({"ok": True, "phase": 5, "authed": bool(current_user())})
 
     return app
 

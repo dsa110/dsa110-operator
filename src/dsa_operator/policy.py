@@ -48,6 +48,7 @@ class Policy:
     read_only: frozenset[str]
     actions: dict[str, dict[str, Any]] = field(default_factory=dict)
     pointing: dict[str, Any] = field(default_factory=dict)
+    autonomy: dict[str, Any] = field(default_factory=dict)
     approval_ttl_s: int = 300
     two_person: frozenset[str] = frozenset()
     promoted: frozenset[str] = frozenset()
@@ -121,6 +122,7 @@ def load_policy(
         read_only=frozenset(raw.get("read_only", []) or []),
         actions=dict(raw.get("actions", {}) or {}),
         pointing=dict(raw.get("pointing", {}) or {}),
+        autonomy=dict(raw.get("autonomy", {}) or {}),
         approval_ttl_s=int(approval.get("ttl_seconds", 300)),
         two_person=frozenset(approval.get("two_person", []) or []),
         promoted=load_promotions(local_path),

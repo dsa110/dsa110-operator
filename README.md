@@ -15,16 +15,19 @@ an etcd lease. Risky/irreversible actions are gated by a human-readable,
 machine-enforced **policy** (`config/policy.yaml`), and **everything** is
 logged.
 
-> **Status: Phase 4.** Everything in Phase 3 plus the **observing-plan
-> machinery**: dependency-light sidereal-time/transit math, a timed
-> declination schedule (built from explicit segments or transit-centred
-> sources), persisted in the operator etcd namespace, and a **plan runner**
-> that turns the active plan into `point_array` actions — *through the
-> same gate engine*, so a plan-driven move still obeys the lease, e-stop,
-> approval gate, and shadow/live rules. Live execution still fires only
-> when `mode: live` **and** the action is promoted in `config/local.yaml`;
-> the only control key written directly is `/cmd/ant/<n>`. See
-> `docs/OPERATOR_AGENT.md`.
+> **Status: Phase 5.** Everything in Phase 4 plus the **autonomy
+> supervisor**: a deterministic, non-LLM loop (`src/dsa_operator/monitor/`)
+> that continuously assesses **health** (fleet, static-sky, SEFD,
+> observation-time cap) and alerts on edge-triggered changes; optionally
+> **auto-recovers** known failures, runs periodic **injection
+> health-checks** (end-to-end pulse tests), and ticks the **observing-plan
+> runner** on a cadence. Every loop is **off by default**; monitoring is
+> read-only, and the three mutating loops act only when their flag is set
+> **and** this session holds the lease **and** the dashboard hasn't locked
+> agents out **and** the e-stop is clear — and even then each action runs
+> the full gate engine (so a "recovery" during commissioning surfaces as
+> *needs approval*). A standing executor runs
+> `python -m dsa_operator.monitor.supervisor`. See `docs/OPERATOR_AGENT.md`.
 
 ## Human authority & the API key
 
@@ -58,7 +61,7 @@ logged.
 | `src/dsa_operator/agent/` | The Claude brain + deterministic stub fallback (read-only tools). |
 | `src/dsa_operator/control/` | Single-executor lease, gate engine, approvals, typed verbs, and the live executor (dashboard delegation + `/cmd/ant` pointing). |
 | `src/dsa_operator/observing/` | Sidereal/transit math, the observing-plan model + etcd persistence, and the plan runner (drives pointing via the engine). |
-| `src/dsa_operator/monitor/` | (later) local, non-LLM health/injection/recovery loops. |
+| `src/dsa_operator/monitor/` | Autonomy supervisor: non-LLM health/recovery/injection loops + plan ticking, all gated through the engine. |
 | `src/dsa_operator/web/` | Flask console + Google SSO + assistant chat (read-only). |
 | `config/policy.yaml` | Capability document as code (the approval gates). |
 | `config/egress_allowlist.yaml` | The only outbound endpoints permitted. |
@@ -86,8 +89,19 @@ python -m dsa_operator.web.app                     # 127.0.0.1:8787
 ```
 
 Any allow-listed Google account gets read-only views + the assistant chat;
-unlisted accounts are denied and audited. The console has **no mutating
-routes** other than chat/login/logout.
+unlisted accounts are denied and audited.
+
+### Autonomy supervisor (Phase 5)
+
+```bash
+# enable loops in config/policy.yaml (autonomy:), then run the standing
+# executor — it acquires the lease as session "supervisor":
+python -m dsa_operator.monitor.supervisor
+```
+
+From the web console, `GET /api/autonomy` shows supervisor status and
+`POST /api/autonomy/tick` forces a monitor refresh (mutating loops stay
+gated unless the *supervisor* session holds the lease).
 
 ## Design
 

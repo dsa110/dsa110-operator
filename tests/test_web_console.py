@@ -213,9 +213,11 @@ def test_mutating_routes_are_exactly_the_known_set(app):
         "/api/lease/acquire", "/api/lease/release", "/api/lease/takeover",
         "/api/control", "/api/approvals/request",
         "/api/approvals/<approval_id>/grant", "/api/pause", "/api/resume",
-        # Phase 4 observing plan (lease-gated; pointing still flows the engine):
-        "/api/plan", "/api/plan/clear", "/api/plan/tick", "/api/plan/preview",
-    }
+            # Phase 4 observing plan (lease-gated; pointing still flows the engine):
+            "/api/plan", "/api/plan/clear", "/api/plan/tick", "/api/plan/preview",
+            # Phase 5 autonomy (monitor-only from the web; mutations gated by lease):
+            "/api/autonomy/tick",
+        }
     found = set()
     for rule in app.url_map.iter_rules():
         if rule.methods - {"HEAD", "OPTIONS", "GET"}:
