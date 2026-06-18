@@ -1,0 +1,98 @@
+# dsa110-operator capability policy  (the "what it can and can't do" doc, as code)
+#
+# This file is the single source of truth for what the agent may do. The
+# operator runbook (docs/OPERATOR_AGENT.md) is generated from it so the
+# prose and the enforced gates can never drift. Editing this file is
+# itself an approval-gated action (see actions.set_policy).
+#
+# Each control action has a `gate`:
+#   autonomous  - the lease-holding session's agent may do it without a
+#                 human OK (still audited + Slack-notified).
+#   approval    - requires a typed confirmation by an authorized human in
+#                 the web console, bound to their Google SSO identity,
+#                 with a short TTL.
+#   forbidden   - never, regardless of lease/approval (kept for rollout).
+#
+# `mode` (global): shadow renders the exact writes/calls each tool WOULD
+# make and logs them WITHOUT sending; live actually executes. Phase 2
+# ships in shadow; graduate per-action as each is validated.
+
+version: 3
+mode: shadow            # shadow | live   (Phase 0/2 default: shadow)
+
+# Global kill switch. When paused, ALL mutating tools fail closed; reads
+# and Q&A continue. The web console and a CLI can flip this.
+paused: false
+
+approval:
+  ttl_seconds: 300      # an approval grant expires this long after issue
+  two_person:           # actions needing a second authorized approver
+    - set_policy
+
+read_only:
+  # Any authenticated (Google SSO) user may call these, no lease needed.
+  - get_fleet_status
+  - get_array_pointing
+  - get_mon
+  - get_audit_log
+  - list_candidates
+  - get_candidate
+  - get_sefd
+  - get_rfi_summary
+  - get_sky_status
+  - query_injections
+
+# ---------------------------------------------------------------------------
+# Control actions. `target` = your stated steady-state goal; `commissioning`
+# = the conservative gate used until the action has been validated live.
+# The active gate is min(commissioning, target) unless promoted in
+# config/local.yaml. Promotion (commissioning -> target) is itself audited.
+# ---------------------------------------------------------------------------
+actions:
+  fire_injection:        { target: autonomous, commissioning: autonomous,
+                           reversible: true,
+                           note: "Synthetic FRB into corr_fast; health-check + calibration." }
+  inject_calibrate:      { target: autonomous, commissioning: autonomous,
+                           reversible: true }
+  utc_start:             { target: autonomous, commissioning: approval,
+                           reversible: true, note: "Arm recording (ARM_SEQ)." }
+  utc_stop:              { target: autonomous, commissioning: approval,
+                           reversible: true }
+  set_dumps_enabled:     { target: autonomous, commissioning: autonomous,
+                           reversible: true }
+  dump_now:              { target: autonomous, commissioning: autonomous,
+                           reversible: true }
+  point_array:           { target: autonomous, commissioning: approval,
+                           reversible: true,
+                           note: "Slew dishes in elevation. Antennas are intrinsically safe;
+                                  gated during commissioning only to validate the dec->el branch." }
+  start_fleet:           { target: autonomous, commissioning: approval,
+                           reversible: true }
+  stop_fleet:            { target: autonomous, commissioning: approval,
+                           reversible: true }
+  bounce_search:         { target: autonomous, commissioning: approval,
+                           reversible: true }
+  build_fstable:         { target: autonomous, commissioning: autonomous,
+                           reversible: true }
+  deploy_fstable:        { target: autonomous, commissioning: approval,
+                           reversible: true }
+  set_spectral_line:     { target: autonomous, commissioning: approval,
+                           reversible: false, note: "Takes effect next fleet start." }
+  delete_snr_cal:        { target: autonomous, commissioning: approval,
+                           reversible: false }
+  # Always human-gated, per the operator's explicit instruction.
+  update_fleet_code:     { target: approval,   commissioning: approval,
+                           reversible: false,
+                           note: "git pull/reset across the fleet. ALWAYS requires a human." }
+  set_policy:            { target: approval,   commissioning: approval,
+                           reversible: false, note: "Editing this policy. Two-person." }
+
+# Pointing safety envelope (correctness, not safety — antennas are safe by
+# design). Commands outside this elevation range are refused by the tool
+# layer to avoid sending invalid drive values.
+pointing:
+  lat_ovro_deg: 37.23
+  el_min_deg: 30.0
+  el_max_deg: 125.0
+  settle_timeout_s: 120.0
+  settle_tol_frac: 0.9

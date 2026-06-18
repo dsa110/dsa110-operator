@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Local operator state / secrets / logs — never commit.
+*.log
+audit_log/
+.secrets/
+*.env
+.env
+config/local.yaml

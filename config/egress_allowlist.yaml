@@ -1,0 +1,25 @@
+# The ONLY outbound network endpoints dsa110-operator is permitted to use.
+# Per the operator's decision: no telemetry egress, no third parties beyond
+# what each chosen feature strictly requires. Everything else must be
+# blocked (enforce with a local egress firewall; the code also refuses to
+# contact hosts not on this list — see audit/egress.py guard, Phase 1).
+#
+# Note: raw observatory telemetry is NEVER sent to the model. Only compact,
+# secret-redacted summaries derived locally are placed in the Claude context.
+
+allow:
+  anthropic:
+    why: "Claude Agent SDK model calls (your account)."
+    hosts: ["api.anthropic.com"]
+  google_sso:
+    why: "Operator web-console login (Google OAuth)."
+    hosts: ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"]
+  slack:
+    why: "Human-facing notifications + audit summaries + approval pings."
+    hosts: ["hooks.slack.com"]
+  h23_ssh:
+    why: "The single SSH hop; etcd + dashboard + data are reached THROUGH h23."
+    hosts: ["h23"]          # resolved via the operator's ~/.ssh/config Host alias
+    transport: ssh
+
+deny_everything_else: true
