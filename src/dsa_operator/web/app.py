@@ -48,6 +48,10 @@ LOG = logging.getLogger("dsa_operator.web")
 ToolsFactory = Callable[[str], ReadOnlyTools]
 
 
+def _truthy(val: object) -> bool:
+    return str(val or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _default_audit() -> AuditLog:
     """AuditLog with a Slack notifier wired from the environment (no-op if
     DSA_OPERATOR_SLACK_WEBHOOK is unset)."""
@@ -135,7 +139,15 @@ def create_app(
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     audit = audit or _default_audit()
-    auth = auth or GoogleAuth.from_env()
+    if auth is None:
+        if _truthy(os.environ.get("DSA_OPERATOR_DEV_LOGIN")):
+            from dsa_operator.web.auth_google import FakeAuth
+            LOG.warning("DSA_OPERATOR_DEV_LOGIN set — using FakeAuth (no SSO). "
+                        "For local testing only; never expose off localhost.")
+            auth = FakeAuth(email=os.environ.get(
+                "DSA_OPERATOR_DEV_EMAIL", "tester@dsa110.org"))
+        else:
+            auth = GoogleAuth.from_env()
     tools_factory = tools_factory or _default_tools_factory(audit)
     agent = agent or build_default_agent()
     control = control if control is not None else _default_control_engine(audit)

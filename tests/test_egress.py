@@ -41,6 +41,14 @@ def test_real_allowlist_loads():
     assert "hooks.slack.com" in hosts
 
 
+def test_slack_reads_url_env(monkeypatch):
+    from dsa_operator.audit.slack import SlackNotifier
+    monkeypatch.delenv("DSA_OPERATOR_SLACK_WEBHOOK", raising=False)
+    monkeypatch.setenv("DSA_OPERATOR_SLACK_WEBHOOK_URL",
+                       "https://hooks.slack.com/services/T/B/x")
+    assert SlackNotifier().enabled
+
+
 def test_socket_guard_blocks_and_restores():
     try:
         assert egress.install_socket_guard(_ALLOW)

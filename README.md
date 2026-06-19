@@ -116,7 +116,7 @@ gated unless the *supervisor* session holds the lease).
 Three user systemd units (tunnel, web console, standing supervisor) live in
 `deploy/` with an install runbook in `deploy/README.md`. Secrets come from a
 git-ignored `EnvironmentFile`; set `DSA_OPERATOR_ENFORCE_EGRESS=1` to arm the
-in-process egress tripwire and `DSA_OPERATOR_SLACK_WEBHOOK` for notifications
+in-process egress tripwire and `DSA_OPERATOR_SLACK_WEBHOOK_URL` for notifications
 (`python -m dsa_operator.audit.slack --test "hi"` to verify). The console is
 tabbed: **Monitor** (live views + chat), **Control** (lease / authority /
 e-stop / propose-action / approvals), **Plan**, and **Autonomy**.

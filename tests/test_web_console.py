@@ -119,6 +119,26 @@ def test_login_sets_identity(client):
     assert who["user"] == "alice@dsa110.org"
 
 
+def test_dev_login_env_uses_fakeauth(tmp_path, monkeypatch):
+    """DSA_OPERATOR_DEV_LOGIN makes create_app() pick FakeAuth (no SSO)."""
+    monkeypatch.setenv("DSA_OPERATOR_DEV_LOGIN", "1")
+    monkeypatch.setenv("DSA_OPERATOR_DEV_EMAIL", "dev@dsa110.org")
+    audit = AuditLog(tmp_path / "audit")
+    etcd = ReadOnlyEtcd(FakeEtcdReader(ETCD_SEED))
+    dash = DashboardClient(getter=_fake_getter)
+    engine = _fake_engine(audit)
+    app = create_app(
+        auth=None,                       # force env-driven selection
+        tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
+        agent=StubAgent(), audit=audit, control=engine,
+        read_etcd=etcd, plan_store=_fake_plan_store(engine, etcd),
+        secret_key="test-secret")
+    app.config.update(TESTING=True)
+    c = app.test_client()
+    assert _login(c).status_code == 302
+    assert c.get("/api/whoami").get_json()["user"] == "dev@dsa110.org"
+
+
 def test_login_denied_when_not_authorized(tmp_path):
     class Deny(FakeAuth):
         def is_authorized(self, email):

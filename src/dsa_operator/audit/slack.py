@@ -59,7 +59,11 @@ class SlackNotifier:
         timeout_s: float = 4.0,
         post_reads: bool = False,
     ) -> None:
-        self.webhook_url = webhook_url or os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK")
+        self.webhook_url = (
+            webhook_url
+            or os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK_URL")
+            or os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK")
+        )
         self.timeout_s = timeout_s
         self.post_reads = post_reads
         if self.webhook_url and _SLACK_HOST not in self.webhook_url:
