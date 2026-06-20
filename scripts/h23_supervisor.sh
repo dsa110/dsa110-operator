@@ -29,8 +29,15 @@ set -euo pipefail
 PY="${PYTHON:-python}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# Use an already-active virtualenv / conda env if there is one (e.g. the dsart
+# env on h23, which already has etcd3, pyyaml, requests); only fall back to a
+# repo-local .venv when nothing is active. Either way, make the src-layout
+# package importable without requiring `pip install -e`.
 # shellcheck disable=SC1091
-[[ -d .venv ]] && source .venv/bin/activate
+if [[ -z "${VIRTUAL_ENV:-}" && -z "${CONDA_PREFIX:-}" && -d .venv ]]; then
+  source .venv/bin/activate
+fi
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 export DSA_OPERATOR_ETCD_HOST="${DSA_OPERATOR_ETCD_HOST:-etcdv3service.pro.pvt}"
 export DSA_OPERATOR_ETCD_PORT="${DSA_OPERATOR_ETCD_PORT:-2379}"

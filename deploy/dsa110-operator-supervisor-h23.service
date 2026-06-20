@@ -34,7 +34,15 @@ Type=simple
 WorkingDirectory=%h/dsa110-operator
 EnvironmentFile=%h/.config/dsa110-operator/operator.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%h/dsa110-operator/src
 Environment=DSA_OPERATOR_AUDIT_ROOT=%h/.local/share/dsa110-operator/audit
+# PYTHONPATH=.../src above means no `pip install -e` is required — only the
+# runtime deps (etcd3, pyyaml, requests) need to be in the chosen interpreter.
+# ExecStart must point at a python that HAS those deps. Either:
+#   (a) make a repo venv:  python3 -m venv .venv && .venv/bin/pip install -e '.[etcd]'
+#       and keep the line below, or
+#   (b) point it at an existing env that already has them, e.g. the dsart conda
+#       env:  ExecStart=/opt/conda/envs/dsart_h23/bin/python -m dsa_operator.monitor.supervisor
 ExecStart=%h/dsa110-operator/.venv/bin/python -m dsa_operator.monitor.supervisor
 Restart=always
 RestartSec=10

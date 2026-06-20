@@ -93,6 +93,13 @@ script — it sets the h23 defaults for you:
 scripts/h23_supervisor.sh
 ```
 
+The script uses whatever virtualenv/conda env is already active (e.g. the
+`dsart` env, which already has `etcd3` / `pyyaml` / `requests`) and adds `src/`
+to `PYTHONPATH`, so you do **not** need a separate venv or `pip install -e` just
+to try it. For the systemd unit, point its `ExecStart` at an interpreter that
+has those deps (a repo `.venv`, or the dsart conda python — see the comments in
+`dsa110-operator-supervisor-h23.service`).
+
 Your laptops still each run their own console over the tunnel and contend for
 the lease normally; the h23 supervisor is simply the default lease-holder that
 drives autonomy + armed plans when no laptop has taken over. Watch it with

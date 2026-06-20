@@ -31,8 +31,14 @@ PY="${PYTHON:-python}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# Use an already-active virtualenv / conda env if there is one; only fall back
+# to a repo-local .venv when nothing is active. Either way, make the src-layout
+# package importable without requiring `pip install -e`.
 # shellcheck disable=SC1091
-[[ -d .venv ]] && source .venv/bin/activate
+if [[ -z "${VIRTUAL_ENV:-}" && -z "${CONDA_PREFIX:-}" && -d .venv ]]; then
+  source .venv/bin/activate
+fi
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 # Persist a session-cookie secret so browser sessions survive console restarts.
 if [[ -z "${DSA_OPERATOR_SECRET_KEY:-}" ]]; then
