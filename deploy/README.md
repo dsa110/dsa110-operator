@@ -4,9 +4,10 @@ Three **user** systemd units (run as the operator, never root):
 
 | Unit | Role |
 | --- | --- |
-| `dsa110-operator-tunnel.service` | SSH `-L` forwards: h23 etcd → `:12379`, dashboard → `:15778`. |
-| `dsa110-operator-web.service` | Flask console + Google SSO + chat (depends on the tunnel). |
-| `dsa110-operator-supervisor.service` | The single standing executor (autonomy loops, off by default). Run **at most one** site-wide. |
+| `dsa110-operator-tunnel.service` | SSH `-L` forwards: h23 etcd → `:12379`, dashboard → `:15778` (auto-reconnects). |
+| `dsa110-operator-web.service` | Flask console + chat (local identity, no SSO; depends on the tunnel). |
+| `dsa110-operator-supervisor.service` | The single standing executor (autonomy loops) on a laptop/workstation **via the tunnel**. Run **at most one** site-wide. |
+| `dsa110-operator-supervisor-h23.service` | The same standing executor, running **directly on h23** (no tunnel). Recommended home for the single executor. |
 
 ## Install
 
@@ -23,7 +24,7 @@ ssh h23 true        # must succeed non-interactively
 # 3. secrets (NOT in git; chmod 600)
 mkdir -p ~/.config/dsa110-operator
 cp .env.example ~/.config/dsa110-operator/operator.env
-$EDITOR ~/.config/dsa110-operator/operator.env   # API key, OAuth, Slack, etc.
+$EDITOR ~/.config/dsa110-operator/operator.env   # API key, Slack, name, etc.
 chmod 600 ~/.config/dsa110-operator/operator.env
 
 # 4. install + start the units
@@ -36,33 +37,67 @@ systemctl --user enable --now dsa110-operator-web
 # systemctl --user enable --now dsa110-operator-supervisor
 ```
 
-Open the console at <http://127.0.0.1:8787>.
+Open the console at <http://127.0.0.1:8787>. There is no login.
 
-## Try it locally (no SSO, no API key)
+## Try it locally (no API key)
 
-A quick laptop trial — read-only monitoring + Q&A, no Google OAuth and no
-Anthropic key (falls back to the deterministic stub agent):
+A quick laptop trial — monitoring + Q&A with no Anthropic key (falls back to
+the deterministic stub agent). The startup script does the tunnel + console:
 
 ```bash
 cd ~/dsa110-operator && python3.10 -m venv .venv && . .venv/bin/activate
 pip install -e '.[etcd,web]'
-
-# 1. tunnel to h23 (needs `ssh h23` to work non-interactively)
-python -m dsa_operator.transport.ssh_tunnel --ssh-host h23 &
-
-# 2. start the console with the dev login bypass
-export DSA_OPERATOR_DEV_LOGIN=1            # FakeAuth — localhost only!
-export DSA_OPERATOR_SECRET_KEY=$(python -c 'import secrets;print(secrets.token_urlsafe(32))')
-python -m dsa_operator.web.app
+scripts/laptop.sh                 # opens tunnel + console; Ctrl-C to stop
 ```
 
-Open <http://127.0.0.1:8787>, click sign-in (the dev bypass logs you straight
-in), and use the **Monitor** tab + chat. To exercise the real Claude brain and
-real control, add `ANTHROPIC_API_KEY`, drop `DSA_OPERATOR_DEV_LOGIN`, and
-configure Google OAuth as below.
+Open <http://127.0.0.1:8787> (no login) and use the **Monitor** tab + chat. To
+exercise the real Claude brain and control, add `ANTHROPIC_API_KEY` to
+`~/.config/dsa110-operator/secrets.env`.
 
 > If `etcd3` fails to import with a protobuf error, run with
 > `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+
+## The standing supervisor on h23 (recommended)
+
+The single standing executor is best run **on h23 itself**. It is headless —
+it **exposes no port**, so nothing has to reach it; it just holds the lease and
+runs the loops. On h23, etcd and the dashboard are local, so it needs **no SSH
+tunnel** — point it straight at them:
+
+```bash
+# on h23, as the operator account
+git clone git@github.com:dsa110/dsa110-operator.git ~/dsa110-operator
+cd ~/dsa110-operator && python3.10 -m venv .venv && . .venv/bin/activate
+pip install -e '.[etcd]'          # no web/agent needed; supervisor is non-LLM
+
+mkdir -p ~/.config/dsa110-operator
+cat > ~/.config/dsa110-operator/operator.env <<'EOF'
+DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt
+DSA_OPERATOR_ETCD_PORT=2379
+DSA_OPERATOR_DASHBOARD_PORT=5778
+# DSA_OPERATOR_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+EOF
+chmod 600 ~/.config/dsa110-operator/operator.env
+
+mkdir -p ~/.config/systemd/user
+cp deploy/dsa110-operator-supervisor-h23.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now dsa110-operator-supervisor-h23
+loginctl enable-linger $USER      # survive logout
+```
+
+To run it interactively first (before installing the service), just use the
+script — it sets the h23 defaults for you:
+
+```bash
+scripts/h23_supervisor.sh
+```
+
+Your laptops still each run their own console over the tunnel and contend for
+the lease normally; the h23 supervisor is simply the default lease-holder that
+drives autonomy + armed plans when no laptop has taken over. Watch it with
+`journalctl --user -u dsa110-operator-supervisor-h23 -f`, or via the audit
+trail / Slack.
 
 ## Notes
 
@@ -72,6 +107,9 @@ configure Google OAuth as below.
   h23 + loopback should be reachable).
 * **Slack:** set `DSA_OPERATOR_SLACK_WEBHOOK_URL`; test with
   `python -m dsa_operator.audit.slack --test "hello"`.
+* **Sleep/resume:** the tunnel unit (`Restart=always`) and the web console's
+  lease keepalive recover automatically; a lease held across a suspend lapses
+  on h23 (control auto-frees) and the UI prompts a re-acquire on wake.
 * **One executor:** the lease guarantees only one session controls at a
   time, but don't run two supervisors — the second will refuse the lease.
 * **Lingering:** `loginctl enable-linger $USER` keeps user units running

@@ -1,8 +1,8 @@
 """Egress allowlist enforcement.
 
 `config/egress_allowlist.yaml` declares the ONLY outbound hosts the operator
-may contact (Anthropic, Google OAuth, Slack, and SSH to h23). This module
-turns that document into runtime teeth:
+may contact (Anthropic, Slack, and SSH to h23). This module turns that
+document into runtime teeth:
 
 * :func:`host_allowed` / :func:`assert_url_allowed` — application-level checks
   used at egress call sites (e.g. the Slack poster).
@@ -98,7 +98,14 @@ def install_socket_guard(allowlist: Optional[dict] = None) -> bool:
     firewall remains the primary control — this catches code-path mistakes.
     """
     global _ORIG_GETADDRINFO
-    allowed = allowed_hosts(allowlist)
+    allowed = set(allowed_hosts(allowlist))
+    # When the operator reaches etcd directly (e.g. running ON h23 with
+    # DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt), that internal host is a
+    # legitimate, required endpoint — allow it so enforcement can stay on there.
+    etcd_host = os.environ.get("DSA_OPERATOR_ETCD_HOST", "").strip().lower()
+    if etcd_host:
+        allowed.add(etcd_host)
+    allowed = frozenset(allowed)
     with _GUARD_LOCK:
         if _ORIG_GETADDRINFO is not None:
             return True

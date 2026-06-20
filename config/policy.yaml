@@ -8,9 +8,8 @@
 # Each control action has a `gate`:
 #   autonomous  - the lease-holding session's agent may do it without a
 #                 human OK (still audited + Slack-notified).
-#   approval    - requires a typed confirmation by an authorized human in
-#                 the web console, bound to their Google SSO identity,
-#                 with a short TTL.
+#   approval    - requires a typed confirmation by the local operator in
+#                 the web console (recorded under their name), with a short TTL.
 #   forbidden   - never, regardless of lease/approval (kept for rollout).
 #
 # `mode` (global): shadow renders the exact writes/calls each tool WOULD
@@ -30,7 +29,7 @@ approval:
     - set_policy
 
 read_only:
-  # Any authenticated (Google SSO) user may call these, no lease needed.
+  # The local operator may call these, no lease needed.
   - get_fleet_status
   - get_array_pointing
   - get_mon

@@ -1,6 +1,7 @@
-# The web console (Flask + Google SSO + chat). Depends on the tunnel.
-# Secrets (ANTHROPIC_API_KEY, GOOGLE_CLIENT_ID/SECRET, DSA_OPERATOR_*) come
-# from an EnvironmentFile that is NOT in git (chmod 600). Set
+# The web console (Flask + chat; local identity, no SSO). Depends on the tunnel.
+# Secrets (ANTHROPIC_API_KEY, DSA_OPERATOR_SECRET_KEY, optional
+# DSA_OPERATOR_SLACK_WEBHOOK_URL / DSA_OPERATOR_USER) come from an
+# EnvironmentFile that is NOT in git (chmod 600). Set
 # DSA_OPERATOR_ENFORCE_EGRESS=1 there to arm the in-process egress guard.
 [Unit]
 Description=dsa110-operator web console

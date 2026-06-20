@@ -80,6 +80,41 @@ def test_refresh_keeps_the_lease():
     assert lease.holder().actor == "alice"
 
 
+def test_keepalive_idle_when_no_lease():
+    lease, _ = _lease()
+    assert lease.keepalive() == "idle"
+
+
+def test_keepalive_holds_while_refreshing():
+    clock = Clock()
+    lease, _ = _lease(clock=clock, ttl=30)
+    lease.acquire("alice", "sid-a")
+    clock.tick(20)
+    assert lease.keepalive() == "held"     # refreshes
+    clock.tick(20)                         # 40s total, refreshed at 20s
+    assert lease.holder().actor == "alice"
+
+
+def test_keepalive_reports_lost_after_lapse():
+    """Laptop sleeps: TTL passes with no keepalive; on wake we report lost."""
+    clock = Clock()
+    lease, _ = _lease(clock=clock, ttl=30)
+    lease.acquire("alice", "sid-a")
+    clock.tick(31)                         # slept past the TTL
+    assert lease.holder() is None          # key gone on the server
+    assert lease.keepalive() == "lost"     # local state detects + clears it
+    assert lease.keepalive() == "idle"     # cleared, nothing to do now
+
+
+def test_keepalive_reports_lost_on_takeover():
+    clock = Clock()
+    lease, _ = _lease(clock=clock, ttl=30)
+    lease.acquire("alice", "sid-a")
+    taker = ExecutorLease(lease._w, ttl_s=30, now=clock)
+    taker.takeover("bob", "sid-b")
+    assert lease.keepalive() == "lost"     # alice notices bob took over
+
+
 def test_takeover_seizes_from_incumbent():
     lease, _ = _lease()
     lease.acquire("alice", "sid-a")

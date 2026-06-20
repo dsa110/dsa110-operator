@@ -209,6 +209,7 @@ async function planPost(url, target) {
 }
 
 // -- lease --
+let _prevHold = null;            // last known you_hold_it (for lapse detection)
 async function refreshLease() {
   const el = document.getElementById("lease");
   try {
@@ -217,7 +218,34 @@ async function refreshLease() {
     el.textContent = JSON.stringify(d, null, 2);
     const badge = document.getElementById("mode-badge");
     badge.textContent = (d && d.you_hold_it) ? "EXECUTOR · control enabled" : "monitoring";
+    // If we held the lease and now don't, it lapsed (e.g. laptop slept) or
+    // someone took over — make that obvious rather than silently failing.
+    if (_prevHold === true && d && !d.you_hold_it) {
+      const who = (d.holder && d.holder.actor) ? `now held by ${d.holder.actor}`
+                                               : "control is now free";
+      showBanner(`You no longer hold the executor lease (${who}). ` +
+                 `Click Acquire to take control again.`);
+    } else if (d && d.you_hold_it) {
+      clearBanner();
+    }
+    _prevHold = !!(d && d.you_hold_it);
   } catch (e) { el.textContent = "error: " + e; }
+}
+function showBanner(msg) {
+  let b = document.getElementById("wake-banner");
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "wake-banner";
+    b.style.cssText = "position:sticky;top:0;z-index:50;background:#fde68a;" +
+      "color:#7c2d12;padding:8px 12px;font-weight:600;border-bottom:1px solid #f59e0b;";
+    b.onclick = clearBanner;
+    document.body.prepend(b);
+  }
+  b.textContent = "⚠ " + msg + "  (click to dismiss)";
+}
+function clearBanner() {
+  const b = document.getElementById("wake-banner");
+  if (b) b.remove();
 }
 async function _leasePost(path) {
   const el = document.getElementById("lease");
@@ -346,6 +374,22 @@ async function ask(ev) {
   } catch (e) { placeholder.remove(); add("bot", "error: " + e); }
   return false;
 }
+// Keep the lease view live, and react quickly when the laptop wakes / the
+// network returns so a lapsed lease (or a takeover) shows up immediately.
+let _lastSeen = Date.now();
+async function onWake() {
+  const gap = Date.now() - _lastSeen;
+  _lastSeen = Date.now();
+  if (gap > 20000) {                       // likely slept/suspended
+    showBanner("Reconnecting after sleep — re-checking telescope + control…");
+    setTimeout(clearBanner, 4000);
+  }
+  refreshLease();
+}
+setInterval(() => { _lastSeen = Date.now(); refreshLease(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) onWake(); });
+window.addEventListener("focus", onWake);
+window.addEventListener("online", onWake);
 refreshLease();
 </script>
 </body>

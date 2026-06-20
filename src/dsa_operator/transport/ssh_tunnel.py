@@ -223,6 +223,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--dashboard-port", type=int, default=DEFAULT_LOCAL_DASHBOARD_PORT)
     p.add_argument("--print-cmd", action="store_true",
                    help="print the ssh command and exit (no connection)")
+    p.add_argument("--no-retry", action="store_true",
+                   help="exit when the tunnel drops instead of reconnecting "
+                        "(default: supervise + reconnect, e.g. after laptop sleep)")
+    p.add_argument("--max-backoff", type=float, default=30.0,
+                   help="cap on the reconnect backoff in seconds (default 30)")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -233,21 +238,40 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         print(" ".join(build_ssh_command(args.ssh_host, fwds)))
         return 0
 
-    tun = SshTunnel(ssh_host=args.ssh_host, forwards=fwds)
-    tun.start()
-    if not tun.wait_ready():
-        tun.stop()
-        return 1
-    print(f"tunnel up: etcd -> 127.0.0.1:{args.etcd_port}, "
-          f"dashboard -> 127.0.0.1:{args.dashboard_port}. Ctrl-C to close.")
+    def _serve_once() -> bool:
+        """Bring the tunnel up and block until it drops. Returns True if it was
+        ever ready (so the supervisor can reset its backoff)."""
+        tun = SshTunnel(ssh_host=args.ssh_host, forwards=fwds)
+        tun.start()
+        if not tun.wait_ready():
+            tun.stop()
+            return False
+        print(f"tunnel up: etcd -> 127.0.0.1:{args.etcd_port}, "
+              f"dashboard -> 127.0.0.1:{args.dashboard_port}.")
+        try:
+            while tun.is_alive():
+                time.sleep(1.0)
+        finally:
+            tun.stop()
+        LOG.warning("ssh tunnel dropped")
+        return True
+
+    if args.no_retry:
+        return 0 if _serve_once() else 1
+
+    # Supervised reconnect loop: ServerAliveInterval makes ssh exit a few
+    # seconds after the laptop suspends or the link dies; we just bring it back
+    # up. Exponential backoff (reset on a healthy run) avoids hammering h23.
+    backoff = 1.0
     try:
-        while tun.is_alive():
-            time.sleep(1.0)
+        while True:
+            ok = _serve_once()
+            backoff = 1.0 if ok else min(args.max_backoff, backoff * 2)
+            LOG.info("reconnecting in %.0fs…", backoff)
+            time.sleep(backoff)
     except KeyboardInterrupt:
-        pass
-    finally:
-        tun.stop()
-    return 0
+        print("\nclosing tunnel.")
+        return 0
 
 
 if __name__ == "__main__":

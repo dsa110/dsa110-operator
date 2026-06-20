@@ -336,13 +336,23 @@ def main() -> int:  # pragma: no cover
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    # Keep the lease warm alongside the tick loop.
+    # Keep the lease warm alongside the tick loop. If this host sleeps the
+    # lease lapses; on wake keepalive() reports "lost" and we re-acquire so the
+    # standing executor heals itself (re-acquire only succeeds if no one else
+    # grabbed control meanwhile — exactly the arbitration we want).
     def _refresh():
-        while not stop.wait(min(30.0, cfg.min_interval_s)):
+        while not stop.wait(min(10.0, cfg.min_interval_s)):
             try:
-                engine.lease.refresh()
+                if engine.lease.keepalive() == "lost":
+                    if engine.lease.acquire(args.actor, sid):
+                        LOG.warning("re-acquired executor lease after a lapse")
+                    else:
+                        h = engine.lease.holder()
+                        LOG.warning("lease lapsed and is now held by %s — "
+                                    "standing executor is monitor-only",
+                                    h.actor if h else "?")
             except Exception:                                  # noqa: BLE001
-                LOG.exception("lease refresh failed")
+                LOG.exception("lease keepalive failed")
     threading.Thread(target=_refresh, daemon=True).start()
     try:
         sup.run(stop)

@@ -1,9 +1,9 @@
 """Load operator secrets from the environment or a git-ignored local file.
 
-The Claude brain runs as a SINGLE server process that holds ONE Anthropic
-API key. Users never receive a key — they reach the one console over
-Google SSO, and that process makes the Anthropic calls. So a key only ever
-has to exist in one place: the operator host's environment.
+The Claude brain runs in the operator's own console process, which holds one
+Anthropic API key. The console runs locally on the operator's laptop (bound to
+loopback, reached through the SSH tunnel to h23), so the key only ever has to
+exist in one place: that laptop's environment.
 
 This loader looks, in order:
   1. the process environment (e.g. set by systemd, a launcher, 1Password,
@@ -29,7 +29,6 @@ LOG = logging.getLogger("dsa_operator.env")
 # Names treated as secrets for logging hygiene (only names are ever logged).
 SECRET_NAMES = (
     "ANTHROPIC_API_KEY",
-    "GOOGLE_CLIENT_SECRET",
     "DSA_OPERATOR_SECRET_KEY",
     "DSA_OPERATOR_SLACK_WEBHOOK_URL",
 )

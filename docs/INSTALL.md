@@ -45,49 +45,57 @@ console still runs with a deterministic stub assistant.
 > `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` (an upstream `etcd3`
 > packaging quirk).
 
-## Try it in 5 minutes (no OAuth, no API key)
+## Easiest start: the startup scripts
 
-The fastest way to confirm everything is wired:
+Two scripts do everything for you:
 
 ```bash
-# 1. open the tunnel (leave running)
+scripts/laptop.sh        # laptop: opens the tunnel + runs the console (no login)
+scripts/h23_supervisor.sh   # on h23: runs the standing autonomy supervisor
+```
+
+`scripts/laptop.sh` checks your `ssh h23` works, opens the self-healing tunnel,
+waits for it, mints+persists a session secret, and starts the console at
+<http://127.0.0.1:8787>; Ctrl-C tears the tunnel back down. Both scripts accept
+env overrides (see the comments at the top of each).
+
+## Try it manually (no API key needed)
+
+If you'd rather run the steps yourself:
+
+```bash
+# 1. open the tunnel (leave running; it self-heals across laptop sleeps)
 python -m dsa_operator.transport.ssh_tunnel --ssh-host h23 &
 
 # 2. smoke the read-only tools against live h23
 python -m dsa_operator.tools.readonly
 
-# 3. run the console with the local dev-login bypass
-export DSA_OPERATOR_DEV_LOGIN=1          # FakeAuth — localhost only!
+# 3. run the console
 export DSA_OPERATOR_SECRET_KEY=$(python -c 'import secrets;print(secrets.token_urlsafe(32))')
 python -m dsa_operator.web.app           # http://127.0.0.1:8787
 ```
 
-`DSA_OPERATOR_DEV_LOGIN` skips Google sign-in for local testing only — never
-use it on anything reachable off `localhost`. See [USAGE](USAGE.md) for what
-to do once it's open.
+There is **no login** — the console runs on your laptop, bound to loopback, so
+whoever is at the machine is the operator. Without an Anthropic key the console
+runs the deterministic stub assistant (monitoring + Q&A still work). See
+[USAGE](USAGE.md) for what to do once it's open.
 
 ## Full configuration
 
-For real use, configure secrets and Google SSO. Put secrets in a
-**git-ignored** file — either `./.env` in the repo or
+Put secrets in a **git-ignored** file — either `./.env` in the repo or
 `~/.config/dsa110-operator/secrets.env` (see `.env.example`):
 
 ```ini
-# The one Anthropic key that funds the agent (your account). Without it the
+# The Anthropic key that funds the agent (your account). Without it the
 # console falls back to the deterministic stub. Prefer a workspace key with
 # a spend cap.
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Google OAuth for sign-in. Authorize this redirect URI in Google Cloud:
-#   http://localhost:8787/auth/callback
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
+# Your operator name — used only as the audit/lease label so others can see
+# who holds control. Defaults to your OS username if unset.
+# DSA_OPERATOR_USER=vikram
 
-# Who may sign in (monitoring). A domain allowlist or explicit emails.
-DSA_OPERATOR_ALLOWED_DOMAINS=dsa110.org
-# DSA_OPERATOR_ALLOWED_EMAILS=alice@x.org,bob@y.org
-
-# Long random string signing the session cookie.
+# Long random string signing the session cookie (optional on one laptop).
 DSA_OPERATOR_SECRET_KEY=...
 
 # Optional: Slack notifications for control/alerts.
@@ -97,20 +105,20 @@ DSA_OPERATOR_SECRET_KEY=...
 # DSA_OPERATOR_MODEL=claude-sonnet-4-5
 ```
 
-### Setting up Google OAuth
+### Identity (no SSO)
 
-1. In the Google Cloud console create an **OAuth 2.0 Client ID** (type: Web
-   application).
-2. Add `http://localhost:8787/auth/callback` as an authorized redirect URI.
-3. Copy the client ID/secret into the secrets file.
-4. Set `DSA_OPERATOR_ALLOWED_DOMAINS` (or `_ALLOWED_EMAILS`) to the people
-   who may sign in. Unlisted accounts are denied and the denial is audited.
+The console is local to your laptop and reached only through the SSH tunnel, so
+there is nothing to authenticate against — a login screen would add friction
+with no security benefit. Identity is just a label for the audit trail and the
+executor lease: it comes from `DSA_OPERATOR_USER`, else your OS username. When
+several people each run their own laptop instance, the single-executor lease on
+h23 still guarantees only one can control at a time.
 
 ### The Anthropic key
 
-One key funds the agent. Monitoring users never receive a key — they sign in
-over SSO and the server makes the Anthropic calls on the shared account.
-Nothing secret is ever logged or committed.
+The key funds the agent and lives only on your laptop. Without it the console
+falls back to the deterministic stub. Nothing secret is ever logged or
+committed.
 
 ### Slack (optional)
 
@@ -123,8 +131,8 @@ python -m dsa_operator.audit.slack --test "operator slack test"
 ### Egress lockdown (optional, recommended)
 
 Set `DSA_OPERATOR_ENFORCE_EGRESS=1` to arm an in-process DNS tripwire that
-fails closed for any host not in `config/egress_allowlist.yaml` (Anthropic,
-Google, Slack) plus loopback. The host firewall is still the primary control.
+fails closed for any host not in `config/egress_allowlist.yaml` (Anthropic and
+Slack) plus loopback. The host firewall is still the primary control.
 
 ## Running it as a service
 
@@ -135,16 +143,43 @@ from a git-ignored `EnvironmentFile`.
 
 ## Multiple users
 
-There is **no shared server**. Each person runs their own console on their
-own machine (each with their own `h23` SSH access and a copy of the Anthropic
-key). The single-executor **lease lives in `h23`'s etcd**, so across every
-running console only **one** session can hold control at a time — the others
-are monitor-only until it's released. This is how "many watchers, one
-controller" works without a central host.
+There is **no shared server and no login**. Each person runs their own console
+on their own machine (each with their own `h23` SSH access and a copy of the
+Anthropic key), identified by their `DSA_OPERATOR_USER` / OS name. The
+single-executor **lease lives in `h23`'s etcd**, so across every running console
+only **one** session can hold control at a time — the others are monitor-only
+until it's released. This is how "many watchers, one controller" works without a
+central host.
 
 If you want unprompted autonomy (the standing supervisor), run it on **one**
-machine that stays on — it holds the lease as session `supervisor`. Don't run
-two; the second will not get the lease.
+machine that stays on — it holds the lease as session `supervisor` and
+re-acquires it automatically if that machine sleeps and wakes. Don't run two;
+the second will not get the lease. **The recommended home is h23 itself**: the
+supervisor is headless (exposes no port), and on h23 etcd + the dashboard are
+local so it needs no tunnel — set `DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt`,
+`DSA_OPERATOR_ETCD_PORT=2379`, `DSA_OPERATOR_DASHBOARD_PORT=5778` and run the
+`dsa110-operator-supervisor-h23` unit. See [`deploy/README.md`](../deploy/README.md).
+
+## Surviving laptop sleep / disconnects
+
+Closing the lid (or losing wifi) is expected; the pieces recover on their own:
+
+- **Tunnel:** `ServerAliveInterval` makes `ssh` exit within ~45 s of a suspend,
+  and the tunnel command supervises itself — it reconnects with backoff on
+  wake. (Under systemd, `Restart=always` does the same.) Pass `--no-retry` to
+  opt out.
+- **Control lease:** the lease has a short TTL and is refreshed in the
+  background only while your console is awake. If the laptop sleeps the lease
+  **lapses on h23 within ~30 s — control auto-frees**, so a closed laptop can
+  never leave the array stuck "owned". On wake the console detects the lapse and
+  shows a banner prompting you to re-acquire (someone may have taken over while
+  you were gone).
+- **A running observation keeps running.** The pipeline executes autonomously on
+  the fleet, and the **hard observation-time cap is enforced by the `dsart_rt`
+  watchdog on h23**, not by your laptop — so sleeping your laptop neither stops
+  a good observation nor risks an endless one.
+- **The console UI** re-polls the lease, authority, and observation status
+  immediately on focus/visibility/online events after a wake.
 
 ## The dsa110-rt side (human authority)
 

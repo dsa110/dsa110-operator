@@ -49,6 +49,28 @@ def test_slack_reads_url_env(monkeypatch):
     assert SlackNotifier().enabled
 
 
+def test_real_allowlist_drops_google():
+    hosts = egress.allowed_hosts()        # the shipped config file
+    assert not any("google" in h for h in hosts)  # SSO removed
+
+
+def test_socket_guard_allows_direct_etcd_host(monkeypatch):
+    """Running ON h23 with a direct etcd host: that internal host is allowed
+    even with enforcement on, so the supervisor can reach etcd."""
+    monkeypatch.setenv("DSA_OPERATOR_ETCD_HOST", "etcdv3service.pro.pvt")
+    # Stub the real resolver so the "allowed" path doesn't hit live DNS; the
+    # guard captures this as its original at install time.
+    sentinel = object()
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: sentinel)
+    try:
+        assert egress.install_socket_guard(_ALLOW)
+        assert socket.getaddrinfo("etcdv3service.pro.pvt", 2379) is sentinel
+        with pytest.raises(egress.EgressError):
+            socket.getaddrinfo("evil.example.com", 443)
+    finally:
+        egress.uninstall_socket_guard()
+
+
 def test_socket_guard_blocks_and_restores():
     try:
         assert egress.install_socket_guard(_ALLOW)

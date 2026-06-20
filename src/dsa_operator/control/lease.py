@@ -116,6 +116,37 @@ class ExecutorLease:
         self._w.refresh_lease(self._my_lease_id)
         return True
 
+    def mine(self) -> bool:
+        """True if this process minted a lease and still holds the key."""
+        return (self._my_lease_id is not None
+                and self._my_session is not None
+                and self.held_by(self._my_session))
+
+    def keepalive(self) -> str:
+        """Background-thread heartbeat. Returns one of:
+
+        * ``"held"``  — we hold the lease and just refreshed it;
+        * ``"lost"``  — we *thought* we held it but the key is gone (e.g. it
+          expired while the laptop slept, or someone took over). Local state is
+          cleared so the UI can prompt a re-acquire;
+        * ``"idle"``  — we don't hold a lease (nothing to do).
+        """
+        if self._my_lease_id is None:
+            return "idle"
+        if self.mine():
+            try:
+                self._w.refresh_lease(self._my_lease_id)
+            except Exception:                              # noqa: BLE001
+                # refresh on a server-expired lease may raise; treat as lost.
+                self._my_lease_id = None
+                self._my_session = None
+                return "lost"
+            return "held"
+        # We minted a lease but no longer hold the key — it lapsed.
+        self._my_lease_id = None
+        self._my_session = None
+        return "lost"
+
     def release(self, session_id: Optional[str] = None) -> bool:
         h = self.holder()
         if h is None:

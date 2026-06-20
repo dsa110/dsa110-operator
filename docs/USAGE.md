@@ -1,8 +1,8 @@
 # Using dsa110-operator
 
 Once it's [installed and running](INSTALL.md), open the console at
-<http://127.0.0.1:8787> and sign in with Google (or the dev bypass for local
-testing). This page covers day-to-day use.
+<http://127.0.0.1:8787>. There is no login — it runs on your own laptop and
+you are the operator. This page covers day-to-day use.
 
 For the precise list of what the agent may and may not do, see
 [CAPABILITIES](CAPABILITIES.md).
@@ -54,7 +54,7 @@ Things you can ask about (one tool each, all read-only):
   raw `/mon/...` key.
 
 The assistant answers by calling the read-only tools; every call is logged
-under your Google identity. Nothing you do here changes observatory state.
+under your operator name. Nothing you do here changes observatory state.
 
 ## Taking control (the executor lease)
 
@@ -92,8 +92,8 @@ dashboard lockout, executor pin, e-stop, gate, parameter validation, and
 
 `approval`-gated actions don't run until an authorized human grants them.
 Pending requests appear in the **Control** tab with a *Grant* button; grants
-are bound to your SSO identity and expire after 5 minutes. `set_policy` needs
-**two** different approvers.
+are recorded under your operator name and expire after 5 minutes. `set_policy`
+needs **two** different approvers.
 
 ### Shadow vs live
 
@@ -236,8 +236,21 @@ loops stay gated unless the supervisor session holds the lease.
 
 Everything is recorded three ways: an append-only local JSONL audit file (the
 system of record, under `DSA_OPERATOR_AUDIT_ROOT`), the shared etcd audit
-trail, and — if configured — a Slack summary. Every line carries the Google
-identity that initiated it.
+trail, and — if configured — a Slack summary. Every line carries the operator
+name that initiated it.
+
+## After your laptop sleeps
+
+Closing the lid is fine. When you reopen it:
+
+- The **SSH tunnel reconnects on its own** (it self-supervises; under systemd
+  `Restart=always` does the same).
+- If you **held the executor lease**, it lapsed while you were away (the TTL is
+  ~30 s) and control auto-freed on h23. The console shows a banner — click
+  **Acquire** (Control tab) to take control again. Check who holds it first;
+  someone may have taken over.
+- Any **running observation kept going** on the fleet, and its hard time cap is
+  enforced on h23, so nothing was stuck or cut short by your laptop.
 
 ## Troubleshooting
 
@@ -245,7 +258,7 @@ identity that initiated it.
 | --- | --- | --- |
 | Console won't load / read tools error | tunnel not open | start `python -m dsa_operator.transport.ssh_tunnel --ssh-host h23` |
 | `etcd3` import error (protobuf) | upstream packaging quirk | prefix commands with `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` |
-| Sign-in fails | OAuth redirect not authorized / account not allow-listed | check the redirect URI in Google Cloud and `DSA_OPERATOR_ALLOWED_DOMAINS/_EMAILS` |
+| "You no longer hold the executor lease" banner | laptop slept / someone took over | re-acquire the lease (Control tab) |
 | Chat says "denied" for control | you don't hold the lease, or agents are locked out | acquire the lease (Control tab); check dashboard authority |
 | Action returns "shadow" | not promoted / mode is shadow | this is expected until you graduate it (see above) |
 | Agent won't act at all | e-stop engaged or dashboard lockout | resume the e-stop; check the dsa110-rt authority panel |

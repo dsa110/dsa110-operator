@@ -1,7 +1,8 @@
-"""Operator web console (Phase 1).
+"""Operator web console.
 
-Flask app + Google SSO + the multi-user read-only monitoring/chat surface.
-The single-executor lease UI and approval flow arrive in later phases.
+Flask app for the local, laptop-only monitoring/chat/control surface. Identity
+is the local operator name (no SSO — see :mod:`dsa_operator.web.identity`); the
+single-executor lease arbitrates who may control.
 """
 from __future__ import annotations
 

@@ -1,7 +1,5 @@
-"""Phase 2 web control plane: lease, control (shadow), approvals, pause."""
+"""Web control plane: lease, control (shadow), approvals, pause."""
 from __future__ import annotations
-
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -16,7 +14,6 @@ from dsa_operator.etcd.write import FakeOperatorBackend, OperatorEtcdWriter
 from dsa_operator.policy import load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools
 from dsa_operator.web.app import create_app
-from dsa_operator.web.auth_google import FakeAuth
 
 
 def _dash_getter(url, timeout):
@@ -50,7 +47,7 @@ def ctx(tmp_path):
     from dsa_operator.observing.plan import PlanStore
     shared = _SharedStore()
     app = create_app(
-        auth=FakeAuth(email="alice@dsa110.org"),
+        operator="alice",
         tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
         agent=StubAgent(), audit=audit, control=engine,
         read_etcd=etcd, plan_store=PlanStore(shared, shared),
@@ -61,16 +58,17 @@ def ctx(tmp_path):
 
 
 def _login(client):
-    r = client.get("/login")
-    state = parse_qs(urlparse(r.headers["Location"]).query)["state"][0]
-    client.get(f"/auth/callback?code=fake&state={state}")
+    """Identity is now local (no SSO); kept as a no-op so tests read cleanly."""
+    return None
 
 
-def test_control_requires_login(ctx):
+def test_control_denied_without_lease(ctx):
     app, _ = ctx
     c = app.test_client()
-    assert c.post("/api/control", json={"action": "fire_injection"}).status_code == 401
-    assert c.get("/api/lease").status_code == 401
+    # Monitoring is open locally, but control without the lease is denied.
+    d = c.post("/api/control", json={"action": "fire_injection"}).get_json()
+    assert d["decision"]["outcome"] == "denied"
+    assert c.get("/api/lease").get_json()["data"]["you_hold_it"] is False
 
 
 def test_lease_acquire_and_control_shadow(ctx):
@@ -86,7 +84,7 @@ def test_lease_acquire_and_control_shadow(ctx):
     assert acq["ok"] is True
     lease = c.get("/api/lease").get_json()["data"]
     assert lease["you_hold_it"] is True
-    assert lease["holder"]["actor"] == "alice@dsa110.org"
+    assert lease["holder"]["actor"] == "alice"
 
     d2 = c.post("/api/control", json={"action": "fire_injection",
                                       "params": {"snr": 10}}).get_json()
@@ -197,12 +195,10 @@ def test_plan_rejects_bad_envelope(ctx):
 
 def test_takeover_switches_holder(ctx):
     app, engine = ctx
-    # bob acquires in one client
-    cb = app.test_client()
-    _login(cb)  # FakeAuth always returns alice@... -> emulate via direct lease
-    engine.lease.acquire("bob@dsa110.org", "sid-bob")
-    # alice takes over via http
+    # someone else holds the lease (emulated via a direct acquire)
+    engine.lease.acquire("bob", "sid-bob")
+    # the local operator (alice) takes over via http
     ca = app.test_client()
     _login(ca)
     assert ca.post("/api/lease/takeover").get_json()["ok"] is True
-    assert engine.lease.holder().actor == "alice@dsa110.org"
+    assert engine.lease.holder().actor == "alice"

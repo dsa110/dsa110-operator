@@ -6,18 +6,18 @@ what the code enforces).
 
 Two ideas govern everything:
 
-- **Who** is acting — a *monitoring* user (any signed-in person) or the one
-  *executor* (the single session holding the lease).
+- **Who** is acting — a *monitoring* user (anyone with a console open) or the
+  one *executor* (the single session holding the lease).
 - **What gate** an action has — `autonomous`, `approval`, or `forbidden` —
   and whether the system is in `shadow` (dry-run) or `live` mode.
 
 ---
 
-## 1. Anyone signed in (read-only, no lease)
+## 1. Anyone with a console (read-only, no lease)
 
-Every authenticated Google-SSO user can read state and ask the assistant
-questions. These never change anything. Ask the agent **"what can you
-monitor?"** (or call `describe_monitoring`) for the live list. By category:
+Each person runs the console locally (no login); anyone can read state and ask
+the assistant questions. These never change anything. Ask the agent **"what can
+you monitor?"** (or call `describe_monitoring`) for the live list. By category:
 
 | Category | Tools | What you can ask |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ These stay `approval` in **both** columns — they cannot be graduated:
 
 - **Reach any host but `h23`.** etcd, the dashboard, and data are all reached
   through the one SSH hop. No other outbound network except the allowlist
-  (Anthropic API, Google OAuth, Slack) in `config/egress_allowlist.yaml`.
+  (Anthropic API, Slack) in `config/egress_allowlist.yaml`.
 - **Touch the `lxd110h20` web UI.** By design, never.
 - **Run a raw shell or write an arbitrary etcd key.** Only the typed,
   allow-listed actions above exist; the model never holds a raw client. The
@@ -121,7 +121,7 @@ single etcd key the agent can read but never write:
 | Control | Effect |
 | --- | --- |
 | **Lock out agents** (`agents_enabled: false`) | Every agent control attempt fails closed. Reads/Q&A keep working. |
-| **Pin the executor** (`executor_email`) | Only that Google identity may hold the lease and act. |
+| **Pin the executor** (`executor_email`) | Only that operator name may hold the lease and act. |
 | **Observation time cap** (`max_obs_seconds`) | A `dsart_rt` watchdog auto-stops recording after this long, regardless of the agent. |
 
 Plus the operator's own **e-stop** (`paused`) inside this console, which

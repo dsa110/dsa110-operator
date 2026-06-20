@@ -11,9 +11,6 @@ allow:
   anthropic:
     why: "Claude Agent SDK model calls (your account)."
     hosts: ["api.anthropic.com"]
-  google_sso:
-    why: "Operator web-console login (Google OAuth)."
-    hosts: ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"]
   slack:
     why: "Human-facing notifications + audit summaries + approval pings."
     hosts: ["hooks.slack.com"]

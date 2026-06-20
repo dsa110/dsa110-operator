@@ -1,7 +1,7 @@
-"""Phase 1 web console: auth gating, identity in audit, read-only API, chat."""
+"""Web console: local identity, identity in audit, read-only API, chat."""
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import pytest
 
@@ -16,7 +16,6 @@ from dsa_operator.etcd.write import FakeOperatorBackend, OperatorEtcdWriter
 from dsa_operator.policy import load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools
 from dsa_operator.web.app import create_app
-from dsa_operator.web.auth_google import FakeAuth
 
 
 def _fake_engine(audit):
@@ -64,7 +63,7 @@ def app(tmp_path):
 
     engine = _fake_engine(audit)
     application = create_app(
-        auth=FakeAuth(email="alice@dsa110.org"),
+        operator="alice",
         tools_factory=tools_factory,
         agent=StubAgent(),
         audit=audit,
@@ -83,126 +82,88 @@ def client(app):
     return app.test_client()
 
 
-def _login(client):
-    """Drive the FakeAuth SSO round-trip; returns the callback response."""
-    r = client.get("/login")
-    assert r.status_code == 302
-    q = parse_qs(urlparse(r.headers["Location"]).query)
-    state = q["state"][0]
-    return client.get(f"/auth/callback?code=fake&state={state}")
+# -- local identity (no SSO) ------------------------------------------------
 
-
-# -- unauthenticated --------------------------------------------------------
-
-def test_index_anonymous_shows_login(client):
+def test_index_shows_console(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert b"Sign in with Google" in r.data
+    assert b"Sign in" not in r.data        # no login page anymore
 
 
-@pytest.mark.parametrize("path", ["/api/fleet", "/api/whoami", "/api/sky"])
-def test_api_requires_login(client, path):
-    assert client.get(path).status_code == 401
-
-
-def test_chat_requires_login(client):
-    r = client.post("/api/chat", json={"message": "hi"})
-    assert r.status_code == 401
-
-
-# -- login flow -------------------------------------------------------------
-
-def test_login_sets_identity(client):
-    r = _login(client)
-    assert r.status_code == 302
+def test_identity_from_operator_arg(client):
     who = client.get("/api/whoami").get_json()
-    assert who["user"] == "alice@dsa110.org"
+    assert who["user"] == "alice"
 
 
-def test_dev_login_env_uses_fakeauth(tmp_path, monkeypatch):
-    """DSA_OPERATOR_DEV_LOGIN makes create_app() pick FakeAuth (no SSO)."""
-    monkeypatch.setenv("DSA_OPERATOR_DEV_LOGIN", "1")
-    monkeypatch.setenv("DSA_OPERATOR_DEV_EMAIL", "dev@dsa110.org")
+def test_identity_defaults_to_env_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSA_OPERATOR_USER", "casey")
     audit = AuditLog(tmp_path / "audit")
     etcd = ReadOnlyEtcd(FakeEtcdReader(ETCD_SEED))
     dash = DashboardClient(getter=_fake_getter)
     engine = _fake_engine(audit)
     app = create_app(
-        auth=None,                       # force env-driven selection
         tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
         agent=StubAgent(), audit=audit, control=engine,
         read_etcd=etcd, plan_store=_fake_plan_store(engine, etcd),
         secret_key="test-secret")
     app.config.update(TESTING=True)
-    c = app.test_client()
-    assert _login(c).status_code == 302
-    assert c.get("/api/whoami").get_json()["user"] == "dev@dsa110.org"
+    assert app.test_client().get("/api/whoami").get_json()["user"] == "casey"
 
 
-def test_login_denied_when_not_authorized(tmp_path):
-    class Deny(FakeAuth):
-        def is_authorized(self, email):
-            return False
-
-    audit = AuditLog(tmp_path / "audit")
-    etcd = ReadOnlyEtcd(FakeEtcdReader(ETCD_SEED))
-    dash = DashboardClient(getter=_fake_getter)
-    engine = _fake_engine(audit)
-    app = create_app(
-        auth=Deny(email="mallory@evil.com"),
-        tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
-        agent=StubAgent(), audit=audit, control=engine,
-        read_etcd=etcd, plan_store=_fake_plan_store(engine, etcd),
-        secret_key="x",
-    )
-    c = app.test_client()
-    r = c.get("/login")
-    state = parse_qs(urlparse(r.headers["Location"]).query)["state"][0]
-    cb = c.get(f"/auth/callback?code=fake&state={state}")
-    assert cb.status_code == 403
-    assert c.get("/api/whoami").status_code == 401
+def test_no_login_routes(app):
+    rules = {r.rule for r in app.url_map.iter_rules()}
+    assert "/login" not in rules and "/auth/callback" not in rules
 
 
-def test_bad_state_rejected(client):
-    client.get("/login")
-    r = client.get("/auth/callback?code=fake&state=tampered")
-    assert r.status_code == 401
+# -- etcd/dashboard endpoint resolution (laptop tunnel vs on-h23 direct) -----
+
+def test_etcd_endpoint_defaults_to_loopback(monkeypatch):
+    from dsa_operator.web import app as appmod
+    monkeypatch.delenv("DSA_OPERATOR_ETCD_HOST", raising=False)
+    monkeypatch.delenv("DSA_OPERATOR_ETCD_PORT", raising=False)
+    assert appmod._etcd_host() == "127.0.0.1"          # the SSH-tunnel default
+    assert appmod._etcd_port() == 12379
+
+
+def test_etcd_endpoint_direct_on_h23(monkeypatch):
+    from dsa_operator.web import app as appmod
+    monkeypatch.setenv("DSA_OPERATOR_ETCD_HOST", "etcdv3service.pro.pvt")
+    monkeypatch.setenv("DSA_OPERATOR_ETCD_PORT", "2379")
+    monkeypatch.setenv("DSA_OPERATOR_DASHBOARD_PORT", "5778")
+    assert appmod._etcd_host() == "etcdv3service.pro.pvt"
+    assert appmod._etcd_port() == 2379
+    assert appmod._dash_port() == 5778
 
 
 # -- read-only API ----------------------------------------------------------
 
 def test_fleet_endpoint(client):
-    _login(client)
     j = client.get("/api/fleet").get_json()
     assert j["ok"] is True
     assert j["data"]["corr"]["n_reporting"] == 1
 
 
 def test_pointing_endpoint(client):
-    _login(client)
     j = client.get("/api/pointing").get_json()
     assert j["ok"] is True
     assert j["data"]["target_dec_deg"] == 54.5
 
 
 def test_mon_rejects_out_of_scope_key(client):
-    _login(client)
     r = client.get("/api/mon?key=/cnf/secret")
     assert r.status_code == 400
 
 
 def test_api_calls_are_audited_with_identity(client, app):
-    _login(client)
     client.get("/api/fleet")
     rows = app._audit.tail(20)
     fleet_rows = [r for r in rows if r["action"] == "get_fleet_status"]
-    assert fleet_rows and fleet_rows[-1]["actor"] == "alice@dsa110.org"
+    assert fleet_rows and fleet_rows[-1]["actor"] == "alice"
 
 
 # -- chat -------------------------------------------------------------------
 
 def test_chat_routes_to_tool(client):
-    _login(client)
     r = client.post("/api/chat", json={"message": "where is the array pointing?"})
     j = r.get_json()
     assert j["ok"] is True
@@ -211,13 +172,11 @@ def test_chat_routes_to_tool(client):
 
 
 def test_chat_empty_message_rejected(client):
-    _login(client)
     r = client.post("/api/chat", json={"message": "   "})
     assert r.status_code == 400
 
 
 def test_chat_is_audited(client, app):
-    _login(client)
     client.post("/api/chat", json={"message": "fleet status?"})
     actions = {r["action"] for r in app._audit.tail(30)}
     assert "chat" in actions
@@ -228,7 +187,7 @@ def test_chat_is_audited(client, app):
 def test_mutating_routes_are_exactly_the_known_set(app):
     """No unexpected mutating route may exist; control routes are shadow/gated."""
     allowed_post = {
-        "/api/chat", "/logout",
+        "/api/chat",
         # Phase 2 control plane (all lease/gate/approval guarded, shadow-only):
         "/api/lease/acquire", "/api/lease/release", "/api/lease/takeover",
         "/api/control", "/api/approvals/request",

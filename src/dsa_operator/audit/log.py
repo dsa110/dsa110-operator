@@ -74,7 +74,7 @@ class AuditRecord:
 
     action: str                       # e.g. "get_fleet_status", "point_array"
     kind: str = "read"                # read | control | policy | approval | system
-    actor: str = "system"            # Google SSO identity, or "system"/"agent"
+    actor: str = "system"            # local operator name, or "system"/"agent"
     ok: bool = True
     mode: str = "live"               # live | shadow
     params: dict[str, Any] = field(default_factory=dict)

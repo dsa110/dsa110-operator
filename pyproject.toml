@@ -18,9 +18,8 @@ dependencies = [
 # The live etcd read client. Kept optional so the package imports (and
 # the test suite runs against fakes) on a laptop without etcd3.
 etcd = ["etcd3>=0.12"]
-# Phase 1: web console + Google SSO. Flask to match the dsa_monitor
-# house style; Google OAuth is done with `requests` (no extra dep) so the
-# egress surface stays explicit. itsdangerous backs the signed session.
+# Web console (local-only, no SSO). Flask to match the dsa_monitor house
+# style; itsdangerous backs the signed session cookie.
 web = [
     "flask>=2.2",
     "jinja2>=3.1",

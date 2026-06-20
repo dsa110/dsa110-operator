@@ -2,7 +2,7 @@
 
 An ``approval``-gated action may only proceed when a matching, unexpired
 approval grant exists — a typed confirmation by an authorized human, bound
-to their Google SSO identity, with a short TTL (``approval.ttl_seconds``).
+to the local operator's name, with a short TTL (``approval.ttl_seconds``).
 
 * Single-approver actions need one grant. The requester may self-approve
   (the request *is* the human's typed confirmation in the console).

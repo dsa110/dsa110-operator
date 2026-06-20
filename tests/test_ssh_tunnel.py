@@ -4,6 +4,7 @@ import pytest
 from dsa_operator.transport.ssh_tunnel import (
     Forward,
     SshTunnel,
+    _main,
     build_ssh_command,
     default_forwards,
 )
@@ -32,6 +33,9 @@ def test_build_ssh_command_no_remote_shell_and_failclosed():
     assert "-N" in cmd                       # no remote command / shell
     assert "ExitOnForwardFailure=yes" in cmd
     assert "BatchMode=yes" in cmd            # never prompt
+    # ServerAlive* makes ssh exit promptly after a laptop suspends, so the
+    # supervised reconnect loop can bring the tunnel straight back up.
+    assert "ServerAliveInterval=15" in cmd
     assert cmd[-1] == "h23"                  # host is last positional
     # exactly two -L forwards
     assert cmd.count("-L") == 2
@@ -50,3 +54,10 @@ def test_tunnel_requires_host():
 def test_tunnel_command_property_matches_builder():
     tun = SshTunnel(ssh_host="myh23")
     assert tun.command == build_ssh_command("myh23", default_forwards())
+
+
+def test_main_print_cmd_does_not_connect(capsys):
+    rc = _main(["--ssh-host", "h23", "--print-cmd"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.startswith("ssh ") and "h23" in out

@@ -46,8 +46,8 @@ what S/N) — a strong end-to-end health check.
 Prefer health_report for "how is the telescope doing?"; prefer the specific
 tool for a focused question.
 
-The user you are serving is identified by their Google login; their
-identity is recorded with every tool call you make.
+The user you are serving is the local operator (their name is recorded with
+every tool call you make).
 """
 
 CONTROL_SYSTEM_PROMPT = """\
@@ -104,8 +104,8 @@ Setting up observations (a single dec, or a sequence):
   each segment's "setup" map, e.g. setup={"spectral_line": {"subbands": [...]}}.
 - To change or stop a running plan, use disarm_observing_plan / clear_plan.
 
-The user is identified by their Google login; their identity is recorded
-with every tool call and control decision.
+The user is the local operator; their name is recorded with every tool call
+and control decision, and the executor lease decides who may control.
 """
 
 

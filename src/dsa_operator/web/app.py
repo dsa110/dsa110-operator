@@ -1,18 +1,20 @@
-"""Operator web console (Phase 1) — Flask, Google SSO, multi-user monitoring.
+"""Operator web console — Flask, local-only (no SSO).
 
-Read-only by design: every API endpoint serves a read-only tool, scoped to
-the logged-in Google identity (which is stamped into every audit row), and
-the chat endpoint routes to the agent, which itself holds only the
-read-only tool surface. There are **no control routes** in this phase.
+The console runs on the operator's own laptop, bound to loopback and reached
+through the SSH tunnel to h23, so there is nothing to authenticate against: the
+identity is just the local operator's name (see
+:mod:`dsa_operator.web.identity`), stamped into every audit row. Monitoring +
+chat are open; control actions are gated by the single-executor lease.
 
-The app factory takes injectable ``auth`` / ``tools_factory`` / ``agent`` /
-``audit`` so tests run with fakes (no Google, no network, no live etcd).
+The app factory takes injectable ``operator`` / ``tools_factory`` / ``agent`` /
+``audit`` so tests run with fakes (no network, no live etcd).
 """
 from __future__ import annotations
 
 import logging
 import os
 import secrets
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -20,11 +22,9 @@ from flask import (
     Flask,
     abort,
     jsonify,
-    redirect,
     render_template,
     request,
     session,
-    url_for,
 )
 
 from dsa_operator import DEFAULT_LOCAL_DASHBOARD_PORT, DEFAULT_LOCAL_ETCD_PORT
@@ -33,7 +33,11 @@ from dsa_operator.agent.base import Agent
 from dsa_operator.audit.log import AuditLog, AuditRecord
 from dsa_operator.control.approvals import ApprovalError, ApprovalStore
 from dsa_operator.control.engine import ControlEngine
-from dsa_operator.control.lease import ExecutorLease, new_session_id
+from dsa_operator.control.lease import (
+    DEFAULT_TTL_S,
+    ExecutorLease,
+    new_session_id,
+)
 from dsa_operator.monitor.injection import InjectionHealthCheck
 from dsa_operator.monitor.supervisor import AutonomyConfig, AutonomySupervisor
 from dsa_operator.observing import astro
@@ -41,15 +45,27 @@ from dsa_operator.observing.plan import ObservingPlan, PlanError, PlanStore
 from dsa_operator.observing.runner import PlanRunner
 from dsa_operator.policy import Policy, load_policy
 from dsa_operator.tools.readonly import ReadOnlyTools, ToolError
-from dsa_operator.web.auth_google import AuthProvider, GoogleAuth
+from dsa_operator.web.identity import resolve_operator
 
 LOG = logging.getLogger("dsa_operator.web")
 
 ToolsFactory = Callable[[str], ReadOnlyTools]
 
 
-def _truthy(val: object) -> bool:
-    return str(val or "").strip().lower() in ("1", "true", "yes", "on")
+def _etcd_host() -> str:
+    """Where etcd lives. Defaults to loopback (the SSH-tunnel-forwarded port);
+    set ``DSA_OPERATOR_ETCD_HOST`` to reach it directly — e.g. running ON h23,
+    set it to ``etcdv3service.pro.pvt`` with ``DSA_OPERATOR_ETCD_PORT=2379``."""
+    return os.environ.get("DSA_OPERATOR_ETCD_HOST", "127.0.0.1")
+
+
+def _etcd_port() -> int:
+    return int(os.environ.get("DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT))
+
+
+def _dash_port() -> int:
+    return int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT",
+                              DEFAULT_LOCAL_DASHBOARD_PORT))
 
 
 def _default_audit() -> AuditLog:
@@ -83,17 +99,17 @@ def _default_control_engine(audit: AuditLog) -> ControlEngine:
     from dsa_operator.etcd.read import connect_readonly
     from dsa_operator.etcd.write import connect_writer
 
-    etcd_port = int(os.environ.get("DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT))
-    dash_port = int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT",
-                                   DEFAULT_LOCAL_DASHBOARD_PORT))
-    writer = connect_writer(port=etcd_port)
+    etcd_host = _etcd_host()
+    etcd_port = _etcd_port()
+    dash_port = _dash_port()
+    writer = connect_writer(host=etcd_host, port=etcd_port)
     # Mirror audit rows into etcd's /operator/audit trail too.
     audit._etcd_sink = audit._etcd_sink or EtcdAuditSink(writer)  # type: ignore[attr-defined]
 
-    read = connect_readonly(port=etcd_port)
+    read = connect_readonly(host=etcd_host, port=etcd_port)
     executor = LiveExecutor(
         dashboard=DashboardControlClient(port=dash_port),
-        control_etcd=ControlEtcdWriter("127.0.0.1", etcd_port),
+        control_etcd=ControlEtcdWriter(etcd_host, etcd_port),
         read_etcd=read,
     )
     return ControlEngine(
@@ -107,10 +123,8 @@ def _default_tools_factory(audit: AuditLog) -> ToolsFactory:
     from dsa_operator.dashboard import DashboardClient
     from dsa_operator.etcd.read import connect_readonly
 
-    etcd = connect_readonly(port=int(os.environ.get("DSA_OPERATOR_ETCD_PORT",
-                                                     DEFAULT_LOCAL_ETCD_PORT)))
-    dash = DashboardClient(port=int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT",
-                                                   DEFAULT_LOCAL_DASHBOARD_PORT)))
+    etcd = connect_readonly(host=_etcd_host(), port=_etcd_port())
+    dash = DashboardClient(port=_dash_port())
 
     def factory(actor: str) -> ReadOnlyTools:
         return ReadOnlyTools(etcd, dash, audit, actor=actor)
@@ -120,7 +134,7 @@ def _default_tools_factory(audit: AuditLog) -> ToolsFactory:
 
 def create_app(
     *,
-    auth: Optional[AuthProvider] = None,
+    operator: Optional[str] = None,
     tools_factory: Optional[ToolsFactory] = None,
     agent: Optional[Agent] = None,
     audit: Optional[AuditLog] = None,
@@ -128,6 +142,7 @@ def create_app(
     plan_store: Optional["PlanStore"] = None,
     read_etcd: Optional[Any] = None,
     secret_key: Optional[str] = None,
+    lease_keepalive: bool = False,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.secret_key = (
@@ -139,15 +154,9 @@ def create_app(
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     audit = audit or _default_audit()
-    if auth is None:
-        if _truthy(os.environ.get("DSA_OPERATOR_DEV_LOGIN")):
-            from dsa_operator.web.auth_google import FakeAuth
-            LOG.warning("DSA_OPERATOR_DEV_LOGIN set — using FakeAuth (no SSO). "
-                        "For local testing only; never expose off localhost.")
-            auth = FakeAuth(email=os.environ.get(
-                "DSA_OPERATOR_DEV_EMAIL", "tester@dsa110.org"))
-        else:
-            auth = GoogleAuth.from_env()
+    # Local-only identity: the console runs on the operator's own laptop bound
+    # to loopback, so there is no SSO. The name is just an audit/lease label.
+    operator_name = resolve_operator(operator)
     tools_factory = tools_factory or _default_tools_factory(audit)
     agent = agent or build_default_agent()
     control = control if control is not None else _default_control_engine(audit)
@@ -156,8 +165,7 @@ def create_app(
     # and a read-only etcd facade. Built by default; injectable for tests.
     if read_etcd is None:
         from dsa_operator.etcd.read import connect_readonly
-        read_etcd = connect_readonly(port=int(os.environ.get(
-            "DSA_OPERATOR_ETCD_PORT", DEFAULT_LOCAL_ETCD_PORT)))
+        read_etcd = connect_readonly(host=_etcd_host(), port=_etcd_port())
     if plan_store is None:
         plan_store = PlanStore(control._writer, read_etcd)  # type: ignore[attr-defined]
 
@@ -186,9 +194,12 @@ def create_app(
                                        verify_after_s=sup_cfg.verify_after_s),
         actor="agent", session_id=_SUP_SID)
 
-    # -- auth helpers ---------------------------------------------------------
-    def current_user() -> Optional[str]:
-        return session.get("user")
+    # -- identity helpers -----------------------------------------------------
+    # No login: every request is the local operator. Each browser session still
+    # gets its own session id so two tabs/browsers on one laptop arbitrate the
+    # executor lease independently.
+    def current_user() -> str:
+        return operator_name
 
     def current_sid() -> str:
         sid = session.get("sid")
@@ -198,65 +209,16 @@ def create_app(
         return sid
 
     def require_user() -> str:
-        user = current_user()
-        if not user:
-            abort(401)
-        return user
+        return operator_name
 
     def _tools_for_request() -> ReadOnlyTools:
         return tools_factory(require_user())
 
-    # -- auth routes ----------------------------------------------------------
-    @app.route("/login")
-    def login():
-        state = secrets.token_urlsafe(16)
-        session["oauth_state"] = state
-        return redirect(auth.authorize_url(state))
-
-    @app.route("/auth/callback")
-    def auth_callback():
-        if "error" in request.args:
-            return _login_error(request.args.get("error", "oauth error"))
-        state = request.args.get("state")
-        if not state or state != session.pop("oauth_state", None):
-            return _login_error("bad oauth state")
-        code = request.args.get("code")
-        if not code:
-            return _login_error("missing code")
-        try:
-            email = auth.exchange_code(code)
-        except Exception as exc:                           # noqa: BLE001
-            LOG.warning("oauth exchange failed: %s", exc)
-            return _login_error("login failed")
-        if not auth.is_authorized(email):
-            audit.record(AuditRecord(action="login_denied", kind="system",
-                                     actor=email, ok=False,
-                                     note="not on operator allowlist"))
-            return _login_error(f"{email} is not authorized", code=403)
-        session["user"] = email
-        session["sid"] = new_session_id()
-        audit.record(AuditRecord(action="login", kind="system", actor=email,
-                                 note="google sso"))
-        return redirect(url_for("index"))
-
-    @app.route("/logout", methods=["POST", "GET"])
-    def logout():
-        user = current_user()
-        session.clear()
-        if user:
-            audit.record(AuditRecord(action="logout", kind="system", actor=user))
-        return redirect(url_for("index"))
-
-    def _login_error(msg: str, code: int = 401):
-        return render_template("login.html", error=msg), code
-
     # -- pages ----------------------------------------------------------------
     @app.route("/")
     def index():
-        user = current_user()
-        if not user:
-            return render_template("login.html", error=None)
-        return render_template("console.html", user=user, agent_model=getattr(agent, "model", "?"))
+        return render_template("console.html", user=operator_name,
+                               agent_model=getattr(agent, "model", "?"))
 
     @app.route("/api/whoami")
     def whoami():
@@ -374,6 +336,7 @@ def create_app(
         return jsonify({"ok": True, "data": {
             "holder": h.to_json() if h else None,
             "you_hold_it": bool(h and h.session_id == current_sid()),
+            "ttl_s": getattr(control.lease, "_ttl", DEFAULT_TTL_S),
         }})
 
     @app.route("/api/lease/acquire", methods=["POST"])
@@ -624,6 +587,29 @@ def create_app(
     def healthz():
         return jsonify({"ok": True, "phase": 5, "authed": bool(current_user())})
 
+    # -- lease keepalive ------------------------------------------------------
+    # While this process holds the executor lease, refresh it on a cadence well
+    # under the TTL so it doesn't lapse during normal use. If the laptop sleeps
+    # the thread freezes, the lease expires on h23 (control auto-frees — good),
+    # and on wake keepalive() reports "lost" so the UI prompts a re-acquire.
+    def _lease_keepalive_loop(stop: threading.Event) -> None:
+        ttl = getattr(control.lease, "_ttl", DEFAULT_TTL_S)
+        period = max(2.0, float(ttl) / 3.0)
+        while not stop.wait(period):
+            try:
+                state = control.lease.keepalive()
+                if state == "lost":
+                    LOG.warning("executor lease lapsed (laptop asleep / taken "
+                                "over) — control released")
+            except Exception:                              # noqa: BLE001
+                LOG.exception("lease keepalive failed (continuing)")
+
+    if lease_keepalive:
+        _ka_stop = threading.Event()
+        app._lease_keepalive_stop = _ka_stop               # type: ignore[attr-defined]
+        threading.Thread(target=_lease_keepalive_loop, args=(_ka_stop,),
+                         daemon=True, name="lease-keepalive").start()
+
     return app
 
 
@@ -633,7 +619,7 @@ def main() -> int:  # pragma: no cover
     from dsa_operator.env import load_secrets
     load_secrets()
     maybe_install_from_env()
-    app = create_app()
+    app = create_app(lease_keepalive=True)
     host = os.environ.get("DSA_OPERATOR_BIND", "127.0.0.1")
     port = int(os.environ.get("DSA_OPERATOR_PORT", "8787"))
     app.run(host=host, port=port)
