@@ -1,9 +1,9 @@
 # dsa110-operator capability policy  (the "what it can and can't do" doc, as code)
 #
 # This file is the single source of truth for what the agent may do. The
-# operator runbook (docs/OPERATOR_AGENT.md) is generated from it so the
-# prose and the enforced gates can never drift. Editing this file is
-# itself an approval-gated action (see actions.set_policy).
+# human-readable capability doc (docs/CAPABILITIES.md) mirrors it; if they
+# ever disagree, this file wins (it is what the code enforces). Editing this
+# file is itself an approval-gated action (see actions.set_policy).
 #
 # Each control action has a `gate`:
 #   autonomous  - the lease-holding session's agent may do it without a

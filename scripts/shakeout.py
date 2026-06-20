@@ -1,6 +1,13 @@
 """Read-only live shakeout of the operator stack against real h23 etcd +
-dashboard. Run ON h23 (or via the SSH tunnel) — it only reads and runs a
-shadow control round-trip (no lease, so it cannot mutate).
+dashboard. It only reads and runs a shadow control round-trip (no lease, so
+it cannot mutate).
+
+By default it talks to the SSH-forwarded ports (open the tunnel first:
+``python -m dsa_operator.transport.ssh_tunnel --ssh-host h23``):
+
+    python scripts/shakeout.py
+
+To run it directly ON h23 (no tunnel), point it at the real endpoints:
 
     DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt DSA_OPERATOR_ETCD_PORT=2379 \
     DSA_OPERATOR_DASHBOARD_PORT=5778 \
@@ -13,6 +20,7 @@ import json
 import os
 import tempfile
 
+from dsa_operator import DEFAULT_LOCAL_DASHBOARD_PORT, DEFAULT_LOCAL_ETCD_PORT
 from dsa_operator.audit.log import AuditLog
 from dsa_operator.control.approvals import ApprovalStore
 from dsa_operator.control.engine import ControlEngine
@@ -34,9 +42,10 @@ def _show(label, fn):
 
 
 def main() -> int:
-    host = os.environ.get("DSA_OPERATOR_ETCD_HOST", "etcdv3service.pro.pvt")
-    eport = int(os.environ.get("DSA_OPERATOR_ETCD_PORT", "2379"))
-    dport = int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT", "5778"))
+    host = os.environ.get("DSA_OPERATOR_ETCD_HOST", "127.0.0.1")
+    eport = int(os.environ.get("DSA_OPERATOR_ETCD_PORT", str(DEFAULT_LOCAL_ETCD_PORT)))
+    dport = int(os.environ.get("DSA_OPERATOR_DASHBOARD_PORT",
+                               str(DEFAULT_LOCAL_DASHBOARD_PORT)))
     print(f"== shakeout: etcd {host}:{eport}, dashboard 127.0.0.1:{dport} ==")
 
     read = connect_readonly(host=host, port=eport)
