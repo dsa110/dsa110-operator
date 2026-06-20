@@ -99,19 +99,19 @@ def test_approval_flow_over_http(ctx):
     c = app.test_client()
     _login(c)
     c.post("/api/lease/acquire")
-    params = {"dec_deg": 33.0}
-    # gated -> needs approval
-    d = c.post("/api/control", json={"action": "point_array",
+    # update_fleet_code always needs a human, so it exercises the approval flow.
+    params = {"branch": "main"}
+    d = c.post("/api/control", json={"action": "update_fleet_code",
                                      "params": params}).get_json()
     assert d["decision"]["outcome"] == "needs_approval"
     # request + grant
     req = c.post("/api/approvals/request",
-                 json={"action": "point_array", "params": params}).get_json()
+                 json={"action": "update_fleet_code", "params": params}).get_json()
     ap_id = req["data"]["id"]
     g = c.post(f"/api/approvals/{ap_id}/grant").get_json()
     assert g["data"]["satisfied"] is True
     # now shadow-allowed
-    d2 = c.post("/api/control", json={"action": "point_array",
+    d2 = c.post("/api/control", json={"action": "update_fleet_code",
                                       "params": params}).get_json()
     assert d2["decision"]["outcome"] == "shadow"
 
@@ -177,11 +177,11 @@ def test_plan_set_get_and_tick(ctx):
     assert r.get_json()["data"]["n_segments"] == 1
     got = c.get("/api/plan").get_json()["data"]
     assert got["plan"]["segments"][0]["dec_deg"] == 44.0
-    # tick -> point_array through the engine. point_array is approval-gated
-    # during commissioning, so a plan-driven move still needs human approval.
+    # tick -> point_array through the engine. point_array is autonomous, so in
+    # shadow mode it renders the move (shadow) rather than needing approval.
     t = c.post("/api/plan/tick").get_json()["data"]
     assert t["decision"]["action"] == "point_array"
-    assert t["decision"]["outcome"] == "needs_approval"
+    assert t["decision"]["outcome"] == "shadow"
 
 
 def test_plan_rejects_bad_envelope(ctx):

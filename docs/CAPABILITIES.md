@@ -25,33 +25,34 @@ questions. These never change anything:
 
 ## 2. The executor (lease holder) — control actions
 
-The single lease-holding session can run the actions below. Each one is
-**gated**. The shipped, conservative gate is the **"Until validated"**
-column; once you have confirmed an action behaves correctly you graduate it
-to its **"Steady state"** gate per-action via `config/local.yaml` (see
-[USAGE](USAGE.md#graduating-actions-to-live)).
+The single lease-holding session can run the actions below. All of these are
+**autonomous**: the executor's agent may run them without a per-action human
+OK (still audited and Slack-notified). The two exceptions that always need a
+human are in §3.
 
-| Action | Steady state | Until validated | Reversible | What it does |
-| --- | --- | --- | --- | --- |
-| `fire_injection` | autonomous | autonomous | yes | Synthetic FRB into `corr_fast`; health-check + calibration |
-| `inject_calibrate` | autonomous | autonomous | yes | Injection-based SNR calibration |
-| `set_dumps_enabled` | autonomous | autonomous | yes | C2 voltage-dump enable/disable kill-switch |
-| `dump_now` | autonomous | autonomous | yes | Trigger an immediate dump |
-| `build_fstable` | autonomous | autonomous | yes | Build a fringe-stopping table (cache file; no observing impact) |
-| `utc_start` | autonomous | **approval** | yes | Arm recording (ARM_SEQ) |
-| `utc_stop` | autonomous | **approval** | yes | Stop recording |
-| `point_array` | autonomous | **approval** | yes | Slew dishes in elevation (dec → el) |
-| `start_fleet` | autonomous | **approval** | yes | Start the pipeline fleet |
-| `stop_fleet` | autonomous | **approval** | yes | Stop the pipeline fleet |
-| `bounce_search` | autonomous | **approval** | yes | Restart search on a node |
-| `deploy_fstable` | autonomous | **approval** | yes | Push fringe-stop tables to correlator nodes |
-| `set_spectral_line` | autonomous | **approval** | no | Spectral-line mode (takes effect next fleet start) |
-| `delete_snr_cal` | autonomous | **approval** | no | Delete an SNR calibration file |
+| Action | Gate | Reversible | What it does |
+| --- | --- | --- | --- |
+| `fire_injection` | autonomous | yes | Synthetic FRB into `corr_fast`; health-check + calibration |
+| `inject_calibrate` | autonomous | yes | Injection-based SNR calibration |
+| `set_dumps_enabled` | autonomous | yes | C2 voltage-dump enable/disable kill-switch |
+| `dump_now` | autonomous | yes | Trigger an immediate dump |
+| `build_fstable` | autonomous | yes | Build a fringe-stopping table (cache file; no observing impact) |
+| `deploy_fstable` | autonomous | yes | Push fringe-stop tables to correlator nodes |
+| `point_array` | autonomous | yes | Slew dishes in elevation (dec → el) |
+| `start_fleet` | autonomous | yes | Start the pipeline fleet |
+| `stop_fleet` | autonomous | yes | Stop the pipeline fleet |
+| `bounce_search` | autonomous | yes | Restart search on a node |
+| `utc_start` | autonomous | yes | Arm recording (ARM_SEQ) |
+| `utc_stop` | autonomous | yes | Stop recording |
+| `set_spectral_line` | autonomous | no | Spectral-line mode (takes effect next fleet start) |
+| `delete_snr_cal` | autonomous | no | Delete an SNR calibration file |
 
-- **autonomous** — the executor's agent may do it without a human OK (still
-  audited and Slack-notified).
-- **approval** — needs a typed confirmation by an authorized human in the
-  console, bound to their Google identity, expiring after 5 minutes.
+> **Per-action approvals are not required for these.** The agent's safeguard
+> for multi-step observing is **plan-level confirmation**: before it executes
+> a setup or a sequence, it presents the full schedule (sources, coordinates,
+> dec→el, transit times, exact move times) and waits for your explicit
+> go-ahead — see [USAGE](USAGE.md#observing-sequences) and §5. It does not
+> ask again before each individual command.
 
 ## 3. Always require a human (never autonomous)
 

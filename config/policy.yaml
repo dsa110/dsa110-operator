@@ -56,31 +56,30 @@ actions:
                            note: "Synthetic FRB into corr_fast; health-check + calibration." }
   inject_calibrate:      { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  utc_start:             { target: autonomous, commissioning: approval,
+  utc_start:             { target: autonomous, commissioning: autonomous,
                            reversible: true, note: "Arm recording (ARM_SEQ)." }
-  utc_stop:              { target: autonomous, commissioning: approval,
+  utc_stop:              { target: autonomous, commissioning: autonomous,
                            reversible: true }
   set_dumps_enabled:     { target: autonomous, commissioning: autonomous,
                            reversible: true }
   dump_now:              { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  point_array:           { target: autonomous, commissioning: approval,
+  point_array:           { target: autonomous, commissioning: autonomous,
                            reversible: true,
-                           note: "Slew dishes in elevation. Antennas are intrinsically safe;
-                                  gated during commissioning only to validate the dec->el branch." }
-  start_fleet:           { target: autonomous, commissioning: approval,
+                           note: "Slew dishes in elevation. Antennas are intrinsically safe." }
+  start_fleet:           { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  stop_fleet:            { target: autonomous, commissioning: approval,
+  stop_fleet:            { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  bounce_search:         { target: autonomous, commissioning: approval,
+  bounce_search:         { target: autonomous, commissioning: autonomous,
                            reversible: true }
   build_fstable:         { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  deploy_fstable:        { target: autonomous, commissioning: approval,
+  deploy_fstable:        { target: autonomous, commissioning: autonomous,
                            reversible: true }
-  set_spectral_line:     { target: autonomous, commissioning: approval,
+  set_spectral_line:     { target: autonomous, commissioning: autonomous,
                            reversible: false, note: "Takes effect next fleet start." }
-  delete_snr_cal:        { target: autonomous, commissioning: approval,
+  delete_snr_cal:        { target: autonomous, commissioning: autonomous,
                            reversible: false }
   # Always human-gated, per the operator's explicit instruction.
   update_fleet_code:     { target: approval,   commissioning: approval,
