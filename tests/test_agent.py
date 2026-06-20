@@ -25,7 +25,7 @@ def _tools(tmp_path):
 
 @pytest.mark.parametrize("text,tool", [
     ("where is the array pointing?", "get_array_pointing"),
-    ("any RFI right now?", "get_rfi_summary"),
+    ("any RFI right now?", "get_rfi_detail"),
     ("did the injection get detected?", "query_injections"),
     ("show me recent candidates", "list_candidates"),
     ("are all nodes up?", "get_fleet_status"),

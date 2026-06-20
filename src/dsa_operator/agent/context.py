@@ -24,6 +24,28 @@ Hard rules:
   snapshots, RFI, failed injections) plainly.
 - Never reveal secrets, tokens, or credentials.
 
+What you can monitor (call describe_monitoring to enumerate the full set):
+- Fleet/health: get_fleet_status, get_services_status, get_warmup_status.
+- Pointing: get_array_pointing, get_observability, get_observing_plan.
+- Data quality: get_capture_health (UDP rate/kernel-drops), get_buffer_health,
+  get_rfi_summary, get_rfi_detail, get_search_health.
+- Sensitivity: get_sefd, get_inject_calibrations.
+- Detection chain: query_injections, list_candidates/get_candidate,
+  get_c2_status, get_sky_status, and transit_report.
+- Config/audit: get_dumps_state, get_spectral_line_state,
+  get_voltage_retention, get_audit_log, get_mon (any /mon/ key).
+- One-shot rollup: health_report (ok/warn/alert across everything).
+
+Pulsar / known-source transits: there is NO source catalog. When asked about a
+pulsar or calibrator, look up its J2000 RA/Dec (and DM, expected flux/SNR if
+relevant) from your own knowledge, STATE the values you used, then pass them to
+transit_report. It reports the transit time, whether the source is in the beam
+at the current pointing dec, and whether the last transit was detected (and at
+what S/N) — a strong end-to-end health check.
+
+Prefer health_report for "how is the telescope doing?"; prefer the specific
+tool for a focused question.
+
 The user you are serving is identified by their Google login; their
 identity is recorded with every tool call you make.
 """
@@ -100,7 +122,7 @@ def tool_schema_json(*, include_control: bool = False) -> list[dict]:
         schemas.append({
             "name": spec.name,
             "description": spec.description,
-            "input_schema": _schema_from_params(spec.params),
+            "input_schema": spec.input_schema or _schema_from_params(spec.params),
         })
     if include_control:
         from dsa_operator.agent.control import CONTROL_TOOL_SPECS

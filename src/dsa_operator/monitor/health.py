@@ -26,18 +26,24 @@ _RANK = {LEVEL_OK: 0, LEVEL_WARN: 1, LEVEL_ALERT: 2}
 @dataclass(frozen=True)
 class HealthThresholds:
     fleet_min_corr: int = 16
-    fleet_min_search: int = 16
+    fleet_min_search: int = 4
     sky_frame_max_age_s: float = 300.0
     sefd_max_age_s: float = 3600.0
+    rfi_flag_fraction_warn: float = 0.4
+    rfi_flag_fraction_alert: float = 0.7
+    sefd_max_jy: float = 5000.0
 
     @classmethod
     def from_policy_autonomy(cls, autonomy: dict[str, Any]) -> "HealthThresholds":
         t = dict((autonomy or {}).get("thresholds", {}) or {})
         return cls(
             fleet_min_corr=int(t.get("fleet_min_corr", 16)),
-            fleet_min_search=int(t.get("fleet_min_search", 16)),
+            fleet_min_search=int(t.get("fleet_min_search", 4)),
             sky_frame_max_age_s=float(t.get("sky_frame_max_age_s", 300.0)),
             sefd_max_age_s=float(t.get("sefd_max_age_s", 3600.0)),
+            rfi_flag_fraction_warn=float(t.get("rfi_flag_fraction_warn", 0.4)),
+            rfi_flag_fraction_alert=float(t.get("rfi_flag_fraction_alert", 0.7)),
+            sefd_max_jy=float(t.get("sefd_max_jy", 5000.0)),
         )
 
 
@@ -166,8 +172,48 @@ def evaluate_health(
         if age is not None and age > th.sefd_max_age_s:
             add(LEVEL_WARN, "sefd_stale",
                 f"SEFD scan is {age:.0f}s old (>{th.sefd_max_age_s:.0f}s)", age_s=age)
+        med = _first_num(sefd, "median_sefd", "median_sefd_jy")
+        if med is not None and med > th.sefd_max_jy:
+            add(LEVEL_WARN, "sefd_high",
+                f"median SEFD {med:.0f} Jy (>{th.sefd_max_jy:.0f} Jy)", median_sefd=med)
     except Exception as exc:                                   # noqa: BLE001
         add(LEVEL_WARN, "tool_error", f"get_sefd failed: {exc}", tool="get_sefd")
+
+    # -- UDP capture: kernel drops are a hard alert -----------------------
+    # (Guarded by hasattr so older/limited tool stand-ins simply skip it.)
+    if hasattr(tools, "get_capture_health"):
+        try:
+            cap = tools.get_capture_health() or {}
+            n_drop = int(cap.get("n_kernel_dropping", 0) or 0)
+            if n_drop:
+                add(LEVEL_ALERT, "capture_kernel_drops",
+                    f"{n_drop} capture stream(s) dropping packets in-kernel",
+                    streams=cap.get("kernel_drops", []))
+            elif cap.get("n_degraded"):
+                add(LEVEL_WARN, "capture_degraded",
+                    f"{cap.get('n_degraded')} capture stream(s) degraded",
+                    streams=cap.get("degraded", []))
+        except Exception as exc:                               # noqa: BLE001
+            add(LEVEL_WARN, "tool_error", f"get_capture_health failed: {exc}",
+                tool="get_capture_health")
+
+    # -- RFI: flag-fraction thresholds ------------------------------------
+    if hasattr(tools, "get_rfi_detail"):
+        try:
+            rfi = tools.get_rfi_detail() or {}
+            rmax = rfi.get("flag_fraction_max")
+            if isinstance(rmax, (int, float)):
+                if rmax > th.rfi_flag_fraction_alert:
+                    add(LEVEL_ALERT, "rfi_high",
+                        f"max RFI flag fraction {rmax:.2f} (>{th.rfi_flag_fraction_alert})",
+                        worst=rfi.get("worst_nodes", []))
+                elif rmax > th.rfi_flag_fraction_warn:
+                    add(LEVEL_WARN, "rfi_elevated",
+                        f"max RFI flag fraction {rmax:.2f} (>{th.rfi_flag_fraction_warn})",
+                        worst=rfi.get("worst_nodes", []))
+        except Exception as exc:                               # noqa: BLE001
+            add(LEVEL_WARN, "tool_error", f"get_rfi_detail failed: {exc}",
+                tool="get_rfi_detail")
 
     # -- observation-time cap (dashboard-asserted) ------------------------
     if observation is not None:

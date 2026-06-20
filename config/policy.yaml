@@ -44,6 +44,20 @@ read_only:
   - get_observing_plan
   - get_observability
   - get_fstable_status
+  - get_capture_health
+  - get_buffer_health
+  - get_warmup_status
+  - get_rfi_detail
+  - get_search_health
+  - get_voltage_retention
+  - get_c2_status
+  - get_services_status
+  - get_dumps_state
+  - get_spectral_line_state
+  - get_inject_calibrations
+  - transit_report
+  - health_report
+  - describe_monitoring
 
 # ---------------------------------------------------------------------------
 # Control actions. `target` = your stated steady-state goal; `commissioning`
@@ -107,19 +121,22 @@ actions:
 # rather than executing.
 # ---------------------------------------------------------------------------
 autonomy:
-  enabled: false               # master switch for the supervisor loops
-  auto_recover: false          # submit known-failure recoveries through the gate
-  injection_health_check: false  # fire periodic injection probes + verify detection
-  run_plan: false              # tick the observing-plan runner
+  enabled: true                # master switch for the supervisor loops
+  auto_recover: true           # submit known-failure recoveries through the gate
+  injection_health_check: true   # fire periodic injection probes + verify detection
+  run_plan: true               # tick the observing-plan runner (armed plans only)
   intervals:
     health_s: 60               # health-monitor cadence
     injection_s: 3600          # periodic injection-probe cadence
     plan_s: 30                 # plan-runner tick cadence
   thresholds:
-    fleet_min_corr: 16         # alert if fewer corr nodes report
-    fleet_min_search: 16       # alert if fewer search nodes report
+    fleet_min_corr: 16         # alert if fewer corr nodes report (16 corr nodes)
+    fleet_min_search: 4        # alert if fewer search nodes report (4 search nodes)
     sky_frame_max_age_s: 300   # warn if the static-sky frame is staler than this
     sefd_max_age_s: 3600       # warn if the SEFD scan is staler than this
+    rfi_flag_fraction_warn: 0.4   # warn if max per-node RFI flag fraction exceeds
+    rfi_flag_fraction_alert: 0.7  # alert if max per-node RFI flag fraction exceeds
+    sefd_max_jy: 5000          # warn if median SEFD exceeds this (Jy)
     injection_verify_after_s: 180  # wait this long before checking a probe landed
 
 # Pointing safety envelope (correctness, not safety — antennas are safe by

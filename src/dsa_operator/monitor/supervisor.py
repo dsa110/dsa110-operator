@@ -321,8 +321,14 @@ def main() -> int:  # pragma: no cover
     runner = ObservingSequencer(engine, plan_store, ToolsSiteState(tools),
                                 actor=args.actor, session_id=sid)
     cfg = AutonomyConfig.from_policy(engine.policy)
+    # Edge-triggered health alerts -> Slack (if a webhook is configured).
+    slack = None
+    if os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK_URL") \
+            or os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK"):
+        from dsa_operator.audit.slack import SlackNotifier
+        slack = SlackNotifier()
     sup = AutonomySupervisor(
-        engine, tools, audit, cfg, plan_runner=runner,
+        engine, tools, audit, cfg, plan_runner=runner, slack=slack,
         injection=InjectionHealthCheck(engine, tools, audit, actor=args.actor,
                                        session_id=sid, verify_after_s=cfg.verify_after_s),
         actor=args.actor, session_id=sid)

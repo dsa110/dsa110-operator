@@ -48,6 +48,9 @@ class ToolSpec:
     # (tools, kwargs) -> result; kwargs come from the model's tool call.
     invoke: Callable[[ReadOnlyTools, dict[str, Any]], Any]
     params: dict[str, str] = field(default_factory=dict)
+    # Optional explicit JSON-schema (for non-string args like lists/numbers);
+    # when set it overrides the string-only schema derived from `params`.
+    input_schema: dict[str, Any] = None  # type: ignore[assignment]
 
 
 READONLY_TOOL_SPECS: list[ToolSpec] = [
@@ -88,6 +91,74 @@ READONLY_TOOL_SPECS: list[ToolSpec] = [
                  float(a["ra_deg"]) if a.get("ra_deg") not in (None, "") else None),
              {"dec_deg": "declination in degrees",
               "ra_deg": "right ascension in degrees (optional)"}),
+    # -- wider monitoring surface --------------------------------------------
+    ToolSpec("describe_monitoring", "Discover everything you can monitor: the "
+             "categories, the tool that answers each, and the underlying "
+             "signal. Use first when asked 'what can you monitor?'.",
+             lambda t, a: t.describe_monitoring()),
+    ToolSpec("health_report", "One comprehensive ok/warn/alert report card "
+             "across fleet, pointing, capture/drops, buffers, RFI, search, "
+             "SEFD, injections, candidates, sky, dumps.",
+             lambda t, a: t.health_report()),
+    ToolSpec("get_capture_health", "UDP capture health across corr nodes: "
+             "writing?, kernel drops, degraded streams, data rate.",
+             lambda t, a: t.get_capture_health()),
+    ToolSpec("get_buffer_health", "PSRDADA ring-buffer pressure across corr "
+             "nodes (worst node per dada/eada/fada/bada ring).",
+             lambda t, a: t.get_buffer_health()),
+    ToolSpec("get_warmup_status", "Per corr node corr_fast warmup gate "
+             "(ready == safe to arm).",
+             lambda t, a: t.get_warmup_status()),
+    ToolSpec("get_rfi_detail", "Per-node RFI flag fractions: fleet "
+             "median/max + worst nodes (deeper than get_rfi_summary).",
+             lambda t, a: t.get_rfi_detail()),
+    ToolSpec("get_search_health", "Search compute/noise/dump health: C1 "
+             "metering drops, Layer-2 sigma-clamp, cube-dump drops, late "
+             "triggers.",
+             lambda t, a: t.get_search_health()),
+    ToolSpec("get_voltage_retention", "Voltage-buffer retention window across "
+             "corr nodes (how far back a dump can reach).",
+             lambda t, a: t.get_voltage_retention()),
+    ToolSpec("get_c2_status", "C2 coincidencer snapshot: trigger/dump "
+             "counters, dumps_enabled, receiver health, last event, "
+             "injection-match counters.",
+             lambda t, a: t.get_c2_status()),
+    ToolSpec("get_services_status", "Fleet systemd service table "
+             "(active/inactive/failed per node).",
+             lambda t, a: t.get_services_status()),
+    ToolSpec("get_dumps_state", "C2 voltage-dump kill-switch state "
+             "(enabled? who/when/why).",
+             lambda t, a: t.get_dumps_state()),
+    ToolSpec("get_spectral_line_state", "Per-chgroup spectral-line mode and "
+             "integration settings.",
+             lambda t, a: t.get_spectral_line_state()),
+    ToolSpec("get_inject_calibrations", "SNR-calibration (K-factor) buckets "
+             "per DM from injections.",
+             lambda t, a: t.get_inject_calibrations()),
+    ToolSpec("get_fstable_status", "Fringe-stop-table traffic light for a "
+             "declination (per corr node).",
+             lambda t, a: t.get_fstable_status(float(a["dec_deg"])),
+             {"dec_deg": "declination in degrees"}),
+    ToolSpec("transit_report", "Predicted meridian transits for sources YOU "
+             "supply (look up RA/Dec/DM yourself — no catalog), cross-checked "
+             "against current pointing (in-beam?) and recent detections. Each "
+             "source: {label, ra_deg, dec_deg, dm_pc_cm3?, expected_snr?}.",
+             lambda t, a: t.transit_report(
+                 a["sources"], beam_fwhm_deg=float(a.get("beam_fwhm_deg", 3.0))),
+             input_schema={
+                 "type": "object",
+                 "properties": {
+                     "sources": {"type": "array", "items": {
+                         "type": "object",
+                         "properties": {
+                             "label": {"type": "string"},
+                             "ra_deg": {"type": "number"},
+                             "dec_deg": {"type": "number"},
+                             "dm_pc_cm3": {"type": "number"},
+                             "expected_snr": {"type": "number"}},
+                         "required": ["ra_deg", "dec_deg"]}},
+                     "beam_fwhm_deg": {"type": "number"}},
+                 "required": ["sources"]}),
 ]
 
 TOOL_SPECS_BY_NAME = {s.name: s for s in READONLY_TOOL_SPECS}

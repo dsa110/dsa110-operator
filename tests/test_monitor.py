@@ -29,7 +29,7 @@ from dsa_operator.policy import load_policy
 class FakeTools:
     """Stand-in for ReadOnlyTools returning canned, mutable telemetry."""
 
-    def __init__(self, *, corr_rep=16, search_rep=16, sky_age=10.0,
+    def __init__(self, *, corr_rep=16, search_rep=4, sky_age=10.0,
                  sefd_age=100.0, now=1000.0):
         self.now = now
         self._corr_rep = corr_rep
@@ -41,8 +41,8 @@ class FakeTools:
     def get_fleet_status(self):
         return {"corr": {"n_reporting": self._corr_rep, "n_total": 16,
                          "down": [] if self._corr_rep == 16 else ["corr05"]},
-                "search": {"n_reporting": self._search_rep, "n_total": 16,
-                           "down": [] if self._search_rep == 16 else ["search03"]}}
+                "search": {"n_reporting": self._search_rep, "n_total": 4,
+                           "down": [] if self._search_rep >= 4 else ["search03"]}}
 
     def get_sky_status(self):
         return {"latest_frame_unix": self.now - self._sky_age}
@@ -103,7 +103,7 @@ def test_health_all_ok():
 
 
 def test_health_flags_nodes_down():
-    rep = evaluate_health(FakeTools(corr_rep=15, search_rep=12), now=1000.0)
+    rep = evaluate_health(FakeTools(corr_rep=15, search_rep=2), now=1000.0)
     assert rep.level == LEVEL_ALERT
     codes = rep.codes
     assert "corr_nodes_down" in codes and "search_nodes_down" in codes
@@ -127,7 +127,7 @@ def test_health_observation_overrun_alerts():
 # -- recovery ---------------------------------------------------------------
 
 def test_recovery_proposes_bounce_for_search_down():
-    rep = evaluate_health(FakeTools(search_rep=10), now=1000.0)
+    rep = evaluate_health(FakeTools(search_rep=2), now=1000.0)
     props = RecoveryPlaybook().propose(rep)
     assert len(props) == 1
     assert props[0].action == "bounce_search" and props[0].auto is True
@@ -200,7 +200,7 @@ def test_supervisor_disabled_is_noop(tmp_path):
 def test_supervisor_monitors_but_gates_without_lease(tmp_path):
     eng = _engine(tmp_path)
     cfg = AutonomyConfig(enabled=True, auto_recover=True, health_s=1.0)
-    sup = _supervisor(eng, FakeTools(search_rep=10), cfg)
+    sup = _supervisor(eng, FakeTools(search_rep=2), cfg)
     tick = sup.tick(now=1000.0)
     assert tick.health is not None                 # monitoring ran
     assert tick.gated_out and "lease" in tick.gate_reason
@@ -211,7 +211,7 @@ def test_supervisor_auto_recovers_with_lease(tmp_path):
     eng = _engine(tmp_path, mode="live", promote=["bounce_search"])
     eng.lease.acquire("agent", "supervisor")
     cfg = AutonomyConfig(enabled=True, auto_recover=True, health_s=1.0)
-    sup = _supervisor(eng, FakeTools(search_rep=10), cfg)
+    sup = _supervisor(eng, FakeTools(search_rep=2), cfg)
     tick = sup.tick(now=1000.0)
     assert not tick.gated_out
     assert tick.recoveries and tick.recoveries[0]["action"] == "bounce_search"
@@ -223,7 +223,7 @@ def test_supervisor_locked_out_by_dashboard(tmp_path):
                   authority={"agents_enabled": False})
     eng.lease.acquire("agent", "supervisor")
     cfg = AutonomyConfig(enabled=True, auto_recover=True, health_s=1.0)
-    sup = _supervisor(eng, FakeTools(search_rep=10), cfg)
+    sup = _supervisor(eng, FakeTools(search_rep=2), cfg)
     tick = sup.tick(now=1000.0)
     assert tick.gated_out and "locked out" in tick.gate_reason
     assert tick.recoveries == []
@@ -261,6 +261,8 @@ def test_supervisor_respects_health_cadence(tmp_path):
 def test_autonomy_config_from_policy():
     pol = load_policy()                # the shipped config/policy.yaml
     cfg = AutonomyConfig.from_policy(pol)
-    assert cfg.enabled is False        # safe default
+    # Standing monitoring loops are ON in the shipped policy; the *mutating*
+    # loops still only act when the session holds the lease + isn't locked out.
+    assert cfg.enabled is True
     assert cfg.health_s == 60.0
     assert cfg.min_interval_s == 30.0  # min(60, 3600, 30)

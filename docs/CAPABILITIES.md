@@ -16,12 +16,25 @@ Two ideas govern everything:
 ## 1. Anyone signed in (read-only, no lease)
 
 Every authenticated Google-SSO user can read state and ask the assistant
-questions. These never change anything:
+questions. These never change anything. Ask the agent **"what can you
+monitor?"** (or call `describe_monitoring`) for the live list. By category:
 
-`get_fleet_status`, `get_array_pointing`, `get_mon`, `get_audit_log`,
-`list_candidates`, `get_candidate`, `get_sefd`, `get_rfi_summary`,
-`get_sky_status`, `query_injections`, `get_observing_plan`,
-`get_observability`.
+| Category | Tools | What you can ask |
+| --- | --- | --- |
+| Alive & running | `get_fleet_status`, `get_services_status`, `get_warmup_status` | Which nodes are up? Is the fleet observing / safe to arm? Is it warmed up? |
+| Pointing | `get_array_pointing`, `get_observability`, `get_observing_plan`, `get_fstable_status` | Where is the array pointing? Is dec X observable, and when does it transit? Is there an fstable for dec X? |
+| Data quality | `get_capture_health`, `get_buffer_health`, `get_rfi_summary`, `get_rfi_detail`, `get_search_health` | Are we dropping packets? Ring-buffer pressure? RFI level? Search compute/noise/cube-dump health? |
+| Sensitivity | `get_sefd`, `get_inject_calibrations` | What's the SEFD / coherence? Current K-factor calibration? |
+| Detection chain | `query_injections`, `transit_report`, `list_candidates`, `get_candidate`, `get_c2_status`, `get_sky_status` | Are injections detected? Did pulsar/calibrator X transit and get detected? Recent candidates? C2 triggers? Static-sky image fresh? |
+| Config & audit | `get_dumps_state`, `get_spectral_line_state`, `get_voltage_retention`, `get_audit_log`, `get_mon` | Are dumps enabled? Spectral-line mode? Voltage retention window? Who did what? Any `/mon/...` key. |
+| Rollup | `health_report` | "How is the telescope doing?" — one ok/warn/alert report card across all of the above. |
+
+**Pulsars / known sources — no catalog.** When you ask about a pulsar or
+calibrator, the agent looks up its J2000 RA/Dec (and DM / expected flux) from
+its own knowledge, states the values it used, and feeds them to
+`transit_report`, which reports the transit time, whether the source is in the
+beam at the current pointing dec, and whether the *last* transit produced a
+matching detection (and at what S/N). This is a strong end-to-end check.
 
 ## 2. The executor (lease holder) — control actions
 
@@ -116,10 +129,15 @@ halts all control immediately.
 
 ## 7. Autonomy (unprompted behaviour)
 
-A separate, deterministic (non-LLM) supervisor can run standing loops —
-health monitoring, auto-recovery of known failures, periodic injection
-health-checks, and ticking the observing plan. **Every loop is off by
-default.** Monitoring is read-only; the mutating loops act only when their
-flag is on **and** the supervisor holds the lease **and** agents aren't
-locked out **and** the e-stop is clear — and even then each action runs the
-full gauntlet above. See [USAGE](USAGE.md#autonomy).
+A separate, deterministic (non-LLM) supervisor runs standing loops — health
+monitoring (every 60 s), auto-recovery of known failures, periodic injection
+health-checks (hourly), and ticking the *armed* observing plan. These loops
+are **on by default** in the shipped policy. The health loop is read-only and
+edge-triggers a Slack alert when the report level worsens. The mutating loops
+(auto-recover / injection / plan) act only when their flag is on **and** the
+supervisor holds the lease **and** agents aren't locked out **and** the e-stop
+is clear — and even then each action runs the full gauntlet above, so on a
+laptop without the lease the supervisor is effectively a monitor. Health
+thresholds (fleet counts, RFI flag-fraction warn/alert, SEFD ceiling, sky/SEFD
+staleness) live under `autonomy.thresholds` in `config/policy.yaml`. See
+[USAGE](USAGE.md#autonomy).

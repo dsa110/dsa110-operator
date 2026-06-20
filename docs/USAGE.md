@@ -22,12 +22,36 @@ The window has four tabs. A badge in the header shows whether you are just
 ## Monitoring and asking questions (anyone)
 
 Any signed-in user can use the **Monitor** tab and chat — no lease required.
-Ask things like:
+Not sure what's available? Ask **"what can you monitor?"** and the agent
+enumerates everything (it calls `describe_monitoring`).
 
-- "Are all nodes up?"
-- "What's the array pointed at right now?"
-- "Did the last injection get detected?"
-- "Summarise the recent audit log."
+**Best first question: "How is the telescope doing?"** — the agent calls
+`health_report`, a single ok/warn/alert report card across fleet, pointing,
+UDP capture / packet drops, ring buffers, RFI, search, SEFD, injections,
+candidates, static sky, and dump state. Drill in from there.
+
+Things you can ask about (one tool each, all read-only):
+
+- **Up & running:** "Are all nodes up?", "Which services failed?", "Is it
+  warmed up / safe to arm?"
+- **Pointing:** "What's the array pointed at?", "Is dec 69 observable and when
+  does it transit?", "Is there an fstable for dec 69?"
+- **Data quality:** "Are we dropping packets?", "Ring-buffer pressure?",
+  "What's the RFI level (worst nodes)?", "Any cube-dump drops or late
+  triggers?"
+- **Sensitivity:** "What's the SEFD?", "Current injection K-factor?"
+- **Detection chain:** "Did the last injection get detected?", "Recent
+  candidates?", "Show the C2 trigger counters."
+- **Known sources / pulsars:** "Is B0329+54 transiting soon, and did we detect
+  its last transit?" The agent looks up the source's RA/Dec (and DM) itself —
+  **there is no catalog** — states the coordinates it used, then calls
+  `transit_report`, which tells you the transit time, whether the source is in
+  the beam at the current pointing dec, and whether the last transit produced a
+  matching candidate (and at what S/N). Compare against the expected S/N to
+  gauge sensitivity end-to-end.
+- **Config & audit:** "Are voltage dumps enabled?", "Spectral-line mode?",
+  "Voltage retention window?", "Who armed the plan?" — and `get_mon` reads any
+  raw `/mon/...` key.
 
 The assistant answers by calling the read-only tools; every call is logged
 under your Google identity. Nothing you do here changes observatory state.
@@ -174,15 +198,23 @@ touching the bring-up state machine.
 ## Autonomy
 
 The **Autonomy** tab shows the standing supervisor — a deterministic
-(non-LLM) loop that can monitor health, auto-recover known failures, run
-periodic injection health-checks, and tick the observing plan.
+(non-LLM) loop that monitors health, auto-recovers known failures, runs
+periodic injection health-checks, and ticks the *armed* observing plan.
 
-- Every loop is **off by default**; enable them under `autonomy:` in
-  `config/policy.yaml`.
+- The loops are **on by default** in the shipped policy (toggle them under
+  `autonomy:` in `config/policy.yaml`). The health loop runs every 60 s and
+  edge-triggers a **Slack alert** when the rolled-up level worsens (e.g. a node
+  goes down, RFI spikes, packets start dropping) — wire `DSA_OPERATOR_SLACK_
+  WEBHOOK_URL` to receive it.
+- Health thresholds are configurable under `autonomy.thresholds`:
+  `fleet_min_corr` (16), `fleet_min_search` (4), `rfi_flag_fraction_warn`
+  (0.4) / `rfi_flag_fraction_alert` (0.7), `sefd_max_jy` (5000), and the
+  sky/SEFD staleness windows.
 - Monitoring is read-only. The mutating loops act only when their flag is on
   **and** the supervisor holds the lease **and** agents aren't locked out
   **and** the e-stop is clear — and even then each action runs the full gate
-  engine.
+  engine. On a laptop that doesn't hold the lease, the supervisor is purely a
+  monitor.
 - Run the standing executor on one always-on machine:
   `python -m dsa_operator.monitor.supervisor` (or the systemd unit). It holds
   the lease as session `supervisor`.

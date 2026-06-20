@@ -108,3 +108,84 @@ def test_guard_blocks_non_readonly_action(tmp_path):
 def test_dashboard_client_rejects_non_loopback():
     with pytest.raises(ValueError):
         DashboardClient(host="evil.example.com")
+
+
+# -- wider monitoring surface ----------------------------------------------
+
+def test_get_capture_health_flags_kernel_drops(tmp_path):
+    cn = CORR_CNS[0]
+    data = {
+        f"/mon/corr_rt/{cn}/capture/4011": {
+            "arm_state": "WRITING", "rate_gbps": 6.1,
+            "rate_kernel_drop_pps": 12.0, "degraded": False},
+        f"/mon/corr_rt/{cn}/capture/4012": {
+            "arm_state": "WRITING", "rate_gbps": 6.0, "degraded": True},
+    }
+    t = _tools(tmp_path, etcd_data=data)
+    out = t.get_capture_health()
+    assert out["n_writing"] == 2
+    assert out["n_kernel_dropping"] == 1
+    assert out["n_degraded"] == 1
+    assert out["rate_gbps_max"] == 6.1
+
+
+def test_get_rfi_detail_rolls_up_flag_fraction(tmp_path):
+    data = {
+        f"/mon/corr_rt/{CORR_CNS[0]}/rfi": {"total_flag_fraction": {"both": 0.2}},
+        f"/mon/corr_rt/{CORR_CNS[1]}/rfi": {"total_flag_fraction": {"both": 0.8}},
+    }
+    t = _tools(tmp_path, etcd_data=data)
+    out = t.get_rfi_detail()
+    assert out["n_nodes"] == 2
+    assert out["flag_fraction_max"] == 0.8
+    assert out["worst_nodes"][0]["cn"] == CORR_CNS[1]
+
+
+def test_transit_report_in_beam_and_no_catalog(tmp_path):
+    data = {"/mon/array/dec": {"dec_deg": 30.0}}
+    t = _tools(tmp_path, etcd_data=data)
+    out = t.transit_report([
+        {"label": "near", "ra_deg": 53.2, "dec_deg": 30.5, "dm_pc_cm3": 26.8},
+        {"label": "far", "ra_deg": 10.0, "dec_deg": 45.0},
+    ])
+    assert out["pointing_dec_deg"] == 30.0
+    near, far = out["sources"]
+    assert near["in_beam_now"] is True and far["in_beam_now"] is False
+    assert near["next_transit_utc"].endswith("Z")
+    assert "last_transit_utc" in near
+    # no catalog: caller supplied coords; tool just echoes/derives
+    assert near["dec_offset_from_pointing_deg"] == 0.5
+
+
+def test_transit_report_requires_coords(tmp_path):
+    t = _tools(tmp_path)
+    with pytest.raises(ToolError):
+        t.transit_report([{"label": "bad"}])
+    with pytest.raises(ToolError):
+        t.transit_report([])
+
+
+def test_health_report_rolls_up_overall(tmp_path):
+    cn = CORR_CNS[0]
+    data = {f"/mon/service/corr_rt/{c}": {"up": True} for c in CORR_CNS}
+    data["/mon/service/search_rt/1"] = {"up": True}
+    data[f"/mon/corr_rt/{cn}/capture/4011"] = {
+        "arm_state": "WRITING", "rate_gbps": 6.0, "rate_kernel_drop_pps": 5.0}
+    dash = FakeDashboard({"/control/system_state": {"state": "Observing",
+                                                    "safe_to_arm": True}})
+    t = _tools(tmp_path, etcd_data=data, dash=dash)
+    out = t.health_report()
+    assert "overall" in out and "sections" in out
+    assert out["sections"]["capture"]["level"] == "alert"   # kernel drops
+    assert out["overall"] == "alert"
+
+
+def test_describe_monitoring_lists_real_tools(tmp_path):
+    from dsa_operator.agent.base import TOOL_SPECS_BY_NAME
+    t = _tools(tmp_path)
+    cat = t.describe_monitoring()
+    referenced = {name for cat_entry in cat.values()
+                  for name in cat_entry["tools"]}
+    # every advertised tool is a real registered read-only tool
+    assert referenced <= set(TOOL_SPECS_BY_NAME)
+    assert "health_report" in referenced and "transit_report" in referenced

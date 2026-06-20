@@ -173,9 +173,14 @@ def create_app(
     sup_runner = PlanRunner(control, plan_store, read_etcd,
                             actor="agent", session_id=_SUP_SID)
     sup_cfg = AutonomyConfig.from_policy(control.policy)
+    _sup_slack = None
+    if os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK_URL") \
+            or os.environ.get("DSA_OPERATOR_SLACK_WEBHOOK"):
+        from dsa_operator.audit.slack import SlackNotifier
+        _sup_slack = SlackNotifier()
     supervisor = AutonomySupervisor(
         control, sup_tools, audit, sup_cfg,
-        plan_runner=sup_runner,
+        plan_runner=sup_runner, slack=_sup_slack,
         injection=InjectionHealthCheck(control, sup_tools, audit,
                                        actor="agent", session_id=_SUP_SID,
                                        verify_after_s=sup_cfg.verify_after_s),
