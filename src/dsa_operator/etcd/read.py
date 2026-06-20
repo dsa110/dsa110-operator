@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Iterable, Optional, Protocol, runtime_checkable
 
 from dsa_operator import DEFAULT_LOCAL_ETCD_PORT
@@ -41,6 +42,9 @@ class _Etcd3Reader:
     """Thin wrapper over a real ``etcd3`` client, read methods only."""
 
     def __init__(self, host: str, port: int) -> None:
+        # etcd3's generated protobuf code predates its bundled protobuf runtime;
+        # the pure-python impl avoids "Descriptors cannot be created directly".
+        os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
         import etcd3  # lazy: only needed for the live backend
 
         self._c = etcd3.client(host=host, port=port)

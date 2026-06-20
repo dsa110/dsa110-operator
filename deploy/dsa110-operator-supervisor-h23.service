@@ -7,23 +7,28 @@
 # (policy-gated) health/recovery/injection/plan loops. Run AT MOST ONE of
 # these across the whole site — it is the single executor.
 #
+# IMPORTANT — paths are templated with %h (your home dir) and assume the repo
+# is cloned at ~/dsa110-operator. If your clone lives elsewhere (e.g. on the
+# DSA h23 box it is at ~/vikram/dev/dsa110-operator), edit WorkingDirectory,
+# PYTHONPATH and ExecStart below to the ABSOLUTE path of your clone before
+# installing. systemd will NOT expand shell variables here.
+#
 # Install as a USER unit on h23 (run as the operator account, never root):
 #   mkdir -p ~/.config/systemd/user
 #   cp deploy/dsa110-operator-supervisor-h23.service ~/.config/systemd/user/
-#   # put the env below in ~/.config/dsa110-operator/operator.env (chmod 600)
+#   # (optional) put extra env in ~/.config/dsa110-operator/operator.env (chmod 600)
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now dsa110-operator-supervisor-h23
 #   loginctl enable-linger $USER     # keep it running after logout
 #
-# Required env (operator.env) for the on-h23, no-tunnel setup:
-#   DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt   # reach etcd directly
-#   DSA_OPERATOR_ETCD_PORT=2379
-#   DSA_OPERATOR_DASHBOARD_PORT=5778               # dsa_monitor on h23 loopback
-#   # Optional: DSA_OPERATOR_SLACK_WEBHOOK_URL=... for health alerts
-#   # Optional: DSA_OPERATOR_ACTOR=supervisor       # audit label for its actions
-#   # The supervisor is the deterministic, non-LLM loop: NO Anthropic key needed.
-#   # Leave DSA_OPERATOR_ENFORCE_EGRESS unset (the host firewall is the control);
-#   # if you do set it, the etcd host above is allowed automatically.
+# The etcd/dashboard endpoints below are baked in as Environment= so the unit
+# works with no operator.env at all. The optional EnvironmentFile is only for
+# extras you may want later, e.g.:
+#   # DSA_OPERATOR_SLACK_WEBHOOK_URL=...   # health alerts to Slack
+#   # DSA_OPERATOR_ACTOR=supervisor        # audit label for its actions
+# The supervisor is the deterministic, non-LLM loop: NO Anthropic key needed.
+# Leave DSA_OPERATOR_ENFORCE_EGRESS unset (the host firewall is the control);
+# if you do set it, the etcd host below is allowed automatically.
 [Unit]
 Description=dsa110-operator autonomy supervisor on h23 (single executor, no tunnel)
 After=network-online.target
@@ -32,9 +37,17 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/dsa110-operator
-EnvironmentFile=%h/.config/dsa110-operator/operator.env
+# Leading '-' makes this OPTIONAL: a missing file is NOT a startup failure.
+EnvironmentFile=-%h/.config/dsa110-operator/operator.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/dsa110-operator/src
+# etcd3 ships generated protobuf code older than its bundled protobuf runtime;
+# force the pure-python impl so `import etcd3` doesn't raise at startup.
+Environment=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+# Reach etcd + the dsa_monitor dashboard directly on h23 (no SSH tunnel).
+Environment=DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt
+Environment=DSA_OPERATOR_ETCD_PORT=2379
+Environment=DSA_OPERATOR_DASHBOARD_PORT=5778
 Environment=DSA_OPERATOR_AUDIT_ROOT=%h/.local/share/dsa110-operator/audit
 # PYTHONPATH=.../src above means no `pip install -e` is required — only the
 # runtime deps (etcd3, pyyaml, requests) need to be in the chosen interpreter.

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional, Protocol
 from urllib.parse import urlparse
 
@@ -62,6 +63,7 @@ class ControlEtcdWriter:
     """Writes ``/cmd/ant/{n}`` with ``DsaStore``-compatible JSON encoding."""
 
     def __init__(self, host: str, port: int) -> None:
+        os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
         import etcd3  # lazy
 
         self._c = etcd3.client(host=host, port=port)

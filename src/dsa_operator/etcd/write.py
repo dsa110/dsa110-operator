@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any, Optional, Protocol
 
@@ -105,6 +106,7 @@ class Etcd3Backend:
     """Lease + txn-create backed by a real ``etcd3`` client."""
 
     def __init__(self, host: str, port: int) -> None:
+        os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
         import etcd3  # lazy
 
         self._c = etcd3.client(host=host, port=port)
