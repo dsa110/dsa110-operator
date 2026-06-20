@@ -42,6 +42,7 @@ human are in §3.
 | `start_fleet` | autonomous | yes | Start the pipeline fleet |
 | `stop_fleet` | autonomous | yes | Stop the pipeline fleet |
 | `bounce_search` | autonomous | yes | Restart search on a node |
+| `restart_all` | autonomous | yes | Cold fleet restart (async) so a new dec/fstable is picked up |
 | `utc_start` | autonomous | yes | Arm recording (ARM_SEQ) |
 | `utc_stop` | autonomous | yes | Stop recording |
 | `set_spectral_line` | autonomous | no | Spectral-line mode (takes effect next fleet start) |

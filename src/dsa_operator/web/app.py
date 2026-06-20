@@ -308,7 +308,8 @@ def create_app(
         # non-executor's chat can propose but not execute.
         from dsa_operator.agent.control import AgentControl
         control_surface = AgentControl(control, plan_store, read_etcd,
-                                       actor=user, session_id=current_sid())
+                                       actor=user, session_id=current_sid(),
+                                       tools=tools)
         audit.record(AuditRecord(action="chat", kind="read", actor=user,
                                  params={"message": message}))
         try:
@@ -563,6 +564,41 @@ def create_app(
         runner = PlanRunner(control, plan_store, read_etcd,
                             actor=user, session_id=current_sid())
         return jsonify({"ok": True, "data": runner.decide().to_json()})
+
+    @app.route("/api/plan/sequence", methods=["GET", "POST"])
+    def api_plan_sequence():
+        """Per-segment bring-up preview (point/fstable/modes/start/warm/arm)
+        for the staged plan — what to confirm before arming."""
+        user = require_user()
+        from dsa_operator.observing.session import (
+            ObservingSequencer, ToolsSiteState)
+        seq = ObservingSequencer(control, plan_store,
+                                 ToolsSiteState(tools_factory(user)),
+                                 actor=user, session_id=current_sid())
+        return jsonify({"ok": True, "data": seq.describe_plan()})
+
+    @app.route("/api/plan/arm", methods=["POST"])
+    def api_plan_arm():
+        user = require_user()
+        _require_executor()
+        plan = plan_store.arm(by=user, now=time.time())
+        if plan is None:
+            return jsonify({"ok": False, "error": "no staged plan to arm"}), 400
+        audit.record(AuditRecord(action="arm_observing_plan", kind="control",
+                                 actor=user, mode="live",
+                                 params={"n_segments": len(plan.segments)}))
+        return jsonify({"ok": True, "data": {"armed": True,
+                                             "plan": plan.to_json()}})
+
+    @app.route("/api/plan/disarm", methods=["POST"])
+    def api_plan_disarm():
+        user = require_user()
+        _require_executor()
+        plan = plan_store.disarm()
+        audit.record(AuditRecord(action="disarm_observing_plan", kind="control",
+                                 actor=user, mode="live"))
+        return jsonify({"ok": True, "data": {
+            "armed": False, "plan": plan.to_json() if plan else None}})
 
     # -- autonomy supervisor (Phase 5) ----------------------------------------
     @app.route("/api/autonomy")

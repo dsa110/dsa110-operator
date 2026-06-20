@@ -220,6 +220,21 @@ class ReadOnlyTools:
         }
         return self._ok("get_observing_plan", {}, result)
 
+    def get_fstable_status(self, dec_deg: float) -> dict[str, Any]:
+        """Fringe-stop-table traffic light for a declination (per corr node)."""
+        params = {"dec_deg": dec_deg}
+        self._guard("get_fstable_status", params)
+        try:
+            dec = float(dec_deg)
+        except (TypeError, ValueError):
+            raise ToolError("dec_deg must be a number")
+        try:
+            status = self._dash.get(
+                f"/control/fstables/current_status?dec_deg={dec:.4f}")
+        except Exception as exc:                           # noqa: BLE001
+            status = {"error": str(exc)}
+        return self._ok("get_fstable_status", params, status)
+
     def get_observability(self, dec_deg: float,
                           ra_deg: Optional[float] = None) -> dict[str, Any]:
         """Transit elevation / next-transit / observability for a dec (+optional RA)."""

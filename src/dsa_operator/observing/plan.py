@@ -33,6 +33,10 @@ class Segment:
     dec_deg: float
     label: str = ""
     ra_deg: Optional[float] = None     # set when the segment tracks a source
+    # Per-segment mode configuration applied during bring-up, keyed by mode
+    # name -> config, e.g. {"spectral_line": {"subbands": [...]}}. Extensible:
+    # any registered mode applier (see observing.session) picks up its key.
+    setup: dict[str, Any] = field(default_factory=dict)
 
     def contains(self, t: float) -> bool:
         return self.t_start <= t < self.t_end
@@ -42,14 +46,18 @@ class Segment:
              "dec_deg": self.dec_deg, "label": self.label}
         if self.ra_deg is not None:
             d["ra_deg"] = self.ra_deg
+        if self.setup:
+            d["setup"] = self.setup
         return d
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> "Segment":
+        setup = d.get("setup")
         return Segment(
             t_start=float(d["t_start"]), t_end=float(d["t_end"]),
             dec_deg=float(d["dec_deg"]), label=str(d.get("label", "")),
             ra_deg=(float(d["ra_deg"]) if d.get("ra_deg") is not None else None),
+            setup=dict(setup) if isinstance(setup, dict) else {},
         )
 
 
@@ -59,6 +67,11 @@ class ObservingPlan:
     created_by: str = "operator"
     created_ts: float = field(default_factory=time.time)
     note: str = ""
+    # A plan is *staged* (armed=False) when first set: nothing acts on it
+    # until a human has confirmed the schedule and it is explicitly armed.
+    armed: bool = False
+    armed_by: str = ""
+    armed_ts: float = 0.0
 
     # -- validation -----------------------------------------------------------
     def validate(self, *, el_min: float = 30.0, el_max: float = 125.0,
@@ -107,6 +120,9 @@ class ObservingPlan:
             "created_by": self.created_by,
             "created_ts": self.created_ts,
             "note": self.note,
+            "armed": self.armed,
+            "armed_by": self.armed_by,
+            "armed_ts": self.armed_ts,
         }
 
     @staticmethod
@@ -116,6 +132,9 @@ class ObservingPlan:
             created_by=str(d.get("created_by", "operator")),
             created_ts=float(d.get("created_ts", time.time())),
             note=str(d.get("note", "")),
+            armed=bool(d.get("armed", False)),
+            armed_by=str(d.get("armed_by", "")),
+            armed_ts=float(d.get("armed_ts", 0.0) or 0.0),
         )
 
     # -- builders -------------------------------------------------------------
@@ -141,9 +160,11 @@ class ObservingPlan:
             dec = float(r["dec_deg"])
             win = float(r.get("window_min", default_window_min)) * 60.0
             tt = astro.next_transit_unix(ra, after_unix)
+            setup = r.get("setup")
             segs.append(Segment(t_start=tt - win / 2.0, t_end=tt + win / 2.0,
                                 dec_deg=dec, label=str(r.get("label", "")),
-                                ra_deg=ra))
+                                ra_deg=ra,
+                                setup=dict(setup) if isinstance(setup, dict) else {}))
         return ObservingPlan(segs, created_by=created_by, note=note)
 
 
@@ -166,6 +187,25 @@ class PlanStore:
 
     def set(self, plan: ObservingPlan) -> None:
         self._w.put(PLAN_KEY, plan.to_json())
+
+    def arm(self, *, by: str, now: float) -> Optional[ObservingPlan]:
+        """Mark the staged plan armed (the post-confirmation commit)."""
+        plan = self.get()
+        if plan is None:
+            return None
+        plan.armed = True
+        plan.armed_by = by
+        plan.armed_ts = now
+        self.set(plan)
+        return plan
+
+    def disarm(self) -> Optional[ObservingPlan]:
+        plan = self.get()
+        if plan is None:
+            return None
+        plan.armed = False
+        self.set(plan)
+        return plan
 
     def clear(self) -> None:
         try:

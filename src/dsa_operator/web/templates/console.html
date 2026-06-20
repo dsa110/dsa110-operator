@@ -145,7 +145,9 @@
       <h3>Active observing plan</h3>
       <div class="row">
         <button onclick="load('/api/plan','plan-out')">View plan</button>
-        <button onclick="planPost('/api/plan/preview','plan-out')">Preview next</button>
+        <button onclick="planPost('/api/plan/sequence','plan-out')">Preview bring-up</button>
+        <button onclick="planPost('/api/plan/arm','plan-out')">Arm (executor)</button>
+        <button onclick="planPost('/api/plan/disarm','plan-out')">Disarm</button>
         <button onclick="planPost('/api/plan/tick','plan-out')">Tick (executor)</button>
         <button onclick="planPost('/api/plan/clear','plan-out')" class="danger">Clear</button>
       </div>

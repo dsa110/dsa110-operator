@@ -291,7 +291,7 @@ def main() -> int:  # pragma: no cover
     from dsa_operator.audit.egress import maybe_install_from_env
     from dsa_operator.env import load_secrets
     from dsa_operator.observing.plan import PlanStore
-    from dsa_operator.observing.runner import PlanRunner
+    from dsa_operator.observing.session import ObservingSequencer, ToolsSiteState
     from dsa_operator.web.app import (
         _default_audit, _default_control_engine, _default_tools_factory)
 
@@ -315,8 +315,11 @@ def main() -> int:  # pragma: no cover
         return 1
 
     plan_store = PlanStore(engine._writer, engine._read)  # type: ignore[attr-defined]
-    runner = PlanRunner(engine, plan_store, engine._read,  # type: ignore[attr-defined]
-                        actor=args.actor, session_id=sid)
+    # The sequencer runs the full bring-up (point -> fstable -> start/restart
+    # -> warm -> arm) for each segment of an *armed* plan; staged-only plans
+    # are ignored until a human confirms and arms them.
+    runner = ObservingSequencer(engine, plan_store, ToolsSiteState(tools),
+                                actor=args.actor, session_id=sid)
     cfg = AutonomyConfig.from_policy(engine.policy)
     sup = AutonomySupervisor(
         engine, tools, audit, cfg, plan_runner=runner,

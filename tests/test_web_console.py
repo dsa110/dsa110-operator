@@ -235,6 +235,7 @@ def test_mutating_routes_are_exactly_the_known_set(app):
         "/api/approvals/<approval_id>/grant", "/api/pause", "/api/resume",
             # Phase 4 observing plan (lease-gated; pointing still flows the engine):
             "/api/plan", "/api/plan/clear", "/api/plan/tick", "/api/plan/preview",
+            "/api/plan/sequence", "/api/plan/arm", "/api/plan/disarm",
             # Phase 5 autonomy (monitor-only from the web; mutations gated by lease):
             "/api/autonomy/tick",
         }

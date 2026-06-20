@@ -196,6 +196,19 @@ def _plan_stop_fleet(params: dict[str, Any], policy: Policy) -> Plan:
         "Stop the pipeline fleet.")
 
 
+def _plan_restart_all(params: dict[str, Any], policy: Policy) -> Plan:
+    # The dashboard /control/restart_all kicks off a background fanout (etcd +
+    # ssh + lxc + systemctl) and returns 202 + a job_id; the bring-up
+    # sequencer then waits on system_state rather than polling the job.
+    form: dict[str, Any] = {"confirm": "restart_all"}
+    if "dec_deg" in params:
+        form["obs_dec_deg"] = float(params["dec_deg"])
+    return Plan("restart_all", [Step(
+        kind="dashboard_post", target="/control/restart_all", payload=form,
+        note="async cold fleet restart; poll /control/system_state for warm")],
+        "Cold-restart the whole fleet.")
+
+
 def _plan_bounce_search(params: dict[str, Any], policy: Policy) -> Plan:
     form: dict[str, Any] = {"confirm": "bounce_search"}
     if "cn_ids" in params:
@@ -294,6 +307,7 @@ _BUILDERS: dict[str, Callable[[dict[str, Any], Policy], Plan]] = {
     "start_fleet": _plan_start_fleet,
     "stop_fleet": _plan_stop_fleet,
     "bounce_search": _plan_bounce_search,
+    "restart_all": _plan_restart_all,
     "build_fstable": _plan_build_fstable,
     "deploy_fstable": _plan_deploy_fstable,
     "set_spectral_line": _plan_set_spectral_line,

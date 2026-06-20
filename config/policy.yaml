@@ -43,6 +43,7 @@ read_only:
   - query_injections
   - get_observing_plan
   - get_observability
+  - get_fstable_status
 
 # ---------------------------------------------------------------------------
 # Control actions. `target` = your stated steady-state goal; `commissioning`
@@ -73,6 +74,9 @@ actions:
                            reversible: true }
   bounce_search:         { target: autonomous, commissioning: autonomous,
                            reversible: true }
+  restart_all:           { target: autonomous, commissioning: autonomous,
+                           reversible: true,
+                           note: "Cold fleet restart (async job) so a new dec/fstable is picked up." }
   build_fstable:         { target: autonomous, commissioning: autonomous,
                            reversible: true }
   deploy_fstable:        { target: autonomous, commissioning: autonomous,

@@ -104,14 +104,72 @@ In the **Plan** tab (executor only to change):
   (`{label, ra_deg, dec_deg, window_min}`) or explicit `segments`
   (`{t_start, t_end, dec_deg, label}`). Validated against the pointing
   envelope.
-- **Preview next** — what the runner *would* do now (no move).
-- **Tick** — run one step: if the active dec differs from the commanded dec,
-  it issues `point_array` **through the gate engine** (so during commissioning
-  each plan-driven move still needs approval).
+- **Preview** — the per-segment bring-up the sequencer *would* run (no move).
+- **Arm / Disarm** — a staged plan does nothing until armed; arming is the
+  commit after you've confirmed the schedule. The autonomy supervisor (or
+  **Tick**) then drives the bring-up for the active segment through the gate
+  engine.
 - **Clear** — remove the active plan.
+
+Every plan-driven action still flows the full gauntlet (lease, e-stop,
+dashboard lockout, gate, shadow/live) — arming changes *when* it runs, never
+*what is allowed*.
 
 You can also just ask the assistant: "set up an observing plan for 3C48 and
 3C147" or "what's observable at dec 40 right now?".
+
+## Observing sequences
+
+The assistant can take a plain-language request and run a whole observing
+sequence end to end. For example:
+
+> "Observe at DEC 69.04 until nearly an hour before B0329+54 transits, then
+> move to the DEC of B0329+54 and observe until an hour after its transit.
+> Then move to the DEC of 3C286 and observe until an hour after 3C286
+> transits, and return to DEC 69.04 until further instructions."
+
+How it works:
+
+1. **Coordinates.** There is **no built-in source catalog.** The assistant
+   looks up each named source's J2000 RA/Dec itself and **states the
+   coordinates it is using** so you can verify them.
+2. **Schedule.** It computes each source's next transit and turns "an hour
+   before/after transit" into explicit times. The final open-ended segment
+   ("until further instructions") has no end time.
+3. **Confirmation (built in).** It **stages the plan but does not arm it** —
+   nothing moves — and shows you the full schedule: every segment's source,
+   RA/Dec, dec→el, transit time, exact start/end (move) times, and any per-DEC
+   mode. It arms **only after you explicitly confirm.** It does **not** ask
+   again before each individual command.
+4. **Bring-up per segment.** Once armed, the sequencer runs, for each segment:
+   `point_array` (if off target) → wait for the dishes to settle → ensure the
+   **fringe-stopping table** exists (`build_fstable` + `deploy_fstable` if
+   missing) → apply per-DEC modes → `start_fleet` (or `restart_all` if the
+   fleet is already running so it re-reads the new dec/fstable) → wait until
+   the fleet reports **warmed** (the dashboard's `system_state` → `prepared` /
+   `safe_to_arm`) → `utc_start` (arm recording, holdoff 60000).
+
+To change or stop a running sequence, just say so (the assistant disarms /
+clears the plan), or use the dashboard kill switches in
+[§ kill switches](#stopping-things-kill-switches).
+
+### Per-DEC modes (spectral line, and beyond)
+
+Each segment can carry a `setup` map of per-DEC mode configuration that is
+applied **before the fleet starts** (because those settings take effect at the
+next start). Today the built-in mode is spectral line:
+
+```json
+{"t_start": ..., "t_end": ..., "dec_deg": 69.04, "label": "HI",
+ "setup": {"spectral_line": {"subbands": [3, 4]}}}
+```
+
+So you can run different spectral-line configs at different declinations in
+one sequence (e.g. line mode at one DEC, continuum at another by omitting it
+or setting empty subbands). The mechanism is **extensible**: new per-DEC modes
+are added by registering a `ModeApplier` (key → control action) in
+`observing/session.py` — `MODE_APPLIERS` / `register_mode_applier` — without
+touching the bring-up state machine.
 
 ## Autonomy
 
