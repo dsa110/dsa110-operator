@@ -1,6 +1,6 @@
 # Deploying dsa110-operator (laptop / ops workstation)
 
-Three **user** systemd units (run as the operator, never root):
+Four **user** systemd units (run as the operator, never root):
 
 | Unit | Role |
 | --- | --- |
@@ -9,35 +9,43 @@ Three **user** systemd units (run as the operator, never root):
 | `dsa110-operator-supervisor.service` | The single standing executor (autonomy loops) on a laptop/workstation **via the tunnel**. Run **at most one** site-wide. |
 | `dsa110-operator-supervisor-h23.service` | The same standing executor, running **directly on h23** (no tunnel). Recommended home for the single executor. |
 
+> These `.service` files are **templates** — they contain `@REPO@` and
+> `@PYTHON@` placeholders, **not** a hardcoded `~/dsa110-operator` path or a
+> specific interpreter. Install them with `scripts/install_service.sh`, which
+> fills in your actual clone location (anywhere) and your python (your active
+> conda env by default). Don't `cp` them directly.
+
 ## Install
 
+The clone can live **anywhere** and run under **any python** (a conda env is
+the common case). `scripts/install_service.sh` resolves both for you.
+
 ```bash
-# 1. code + venv
-git clone git@github.com:dsa110/dsa110-operator.git ~/dsa110-operator
-cd ~/dsa110-operator
-python3.10 -m venv .venv && . .venv/bin/activate
+# 1. code + deps — clone wherever you like; use a conda env or a venv.
+git clone git@github.com:dsa110/dsa110-operator.git
+cd dsa110-operator
+conda activate myenv            # or: python3.10 -m venv .venv && . .venv/bin/activate
 pip install -e '.[etcd,web,agent]'
 
 # 2. SSH alias for h23 with a passwordless key (~/.ssh/config: Host h23 ...)
 ssh h23 true        # must succeed non-interactively
 
-# 3. secrets (NOT in git; chmod 600)
+# 3. secrets (NOT in git; chmod 600) — optional for read-only/stub use
 mkdir -p ~/.config/dsa110-operator
 cp .env.example ~/.config/dsa110-operator/operator.env
 $EDITOR ~/.config/dsa110-operator/operator.env   # API key, Slack, name, etc.
 chmod 600 ~/.config/dsa110-operator/operator.env
 
-# 4. install + start the units
-mkdir -p ~/.config/systemd/user
-cp deploy/*.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now dsa110-operator-tunnel
-systemctl --user enable --now dsa110-operator-web
-# start the supervisor ONLY when you want the standing executor:
-# systemctl --user enable --now dsa110-operator-supervisor
+# 4. generate + install the units for THIS machine, then start them.
+#    With the conda env active, its python is picked automatically.
+scripts/install_service.sh laptop --enable
+loginctl enable-linger "$USER"   # keep running after logout
 ```
 
-Open the console at <http://127.0.0.1:8787>. There is no login.
+`install_service.sh laptop` installs the tunnel + web (+ an optional, not
+auto-started supervisor) units, substituting your clone path and python. Pick a
+specific interpreter with `--python /path/to/python`; omit `--enable` to install
+without starting. Open the console at <http://127.0.0.1:8787>. There is no login.
 
 ## Try it locally (no API key)
 
@@ -45,8 +53,8 @@ A quick laptop trial — monitoring + Q&A with no Anthropic key (falls back to
 the deterministic stub agent). The startup script does the tunnel + console:
 
 ```bash
-cd ~/dsa110-operator && python3.10 -m venv .venv && . .venv/bin/activate
-pip install -e '.[etcd,web]'
+cd dsa110-operator
+conda activate myenv && pip install -e '.[etcd,web]'   # or a .venv
 scripts/laptop.sh                 # opens tunnel + console; Ctrl-C to stop
 ```
 
@@ -54,8 +62,8 @@ Open <http://127.0.0.1:8787> (no login) and use the **Monitor** tab + chat. To
 exercise the real Claude brain and control, add `ANTHROPIC_API_KEY` to
 `~/.config/dsa110-operator/secrets.env`.
 
-> If `etcd3` fails to import with a protobuf error, run with
-> `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+> The etcd client sets `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`
+> automatically, so the known etcd3/protobuf import error doesn't bite.
 
 ## The standing supervisor on h23 (recommended)
 
@@ -64,41 +72,37 @@ it **exposes no port**, so nothing has to reach it; it just holds the lease and
 runs the loops. On h23, etcd and the dashboard are local, so it needs **no SSH
 tunnel** — point it straight at them:
 
+The etcd/dashboard endpoints are baked into the unit, so no `operator.env` is
+required. Clone anywhere; run under the `dsart` (or any) conda env that already
+has `etcd3` / `pyyaml` / `requests` — the installer picks the active env.
+
 ```bash
-# on h23, as the operator account
-git clone git@github.com:dsa110/dsa110-operator.git ~/dsa110-operator
-cd ~/dsa110-operator && python3.10 -m venv .venv && . .venv/bin/activate
-pip install -e '.[etcd]'          # no web/agent needed; supervisor is non-LLM
+# on h23, as the operator account — clone wherever you like
+git clone git@github.com:dsa110/dsa110-operator.git
+cd dsa110-operator
+conda activate dsart_h23          # already has etcd3 / pyyaml / requests
 
+# generate + install the h23 unit for THIS clone + this python, then start it.
+scripts/install_service.sh h23 --enable
+loginctl enable-linger "$USER"    # survive logout
+
+# optional: add Slack alerts later
 mkdir -p ~/.config/dsa110-operator
-cat > ~/.config/dsa110-operator/operator.env <<'EOF'
-DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt
-DSA_OPERATOR_ETCD_PORT=2379
-DSA_OPERATOR_DASHBOARD_PORT=5778
-# DSA_OPERATOR_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-EOF
+echo 'DSA_OPERATOR_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...' \
+  >> ~/.config/dsa110-operator/operator.env
 chmod 600 ~/.config/dsa110-operator/operator.env
-
-mkdir -p ~/.config/systemd/user
-cp deploy/dsa110-operator-supervisor-h23.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now dsa110-operator-supervisor-h23
-loginctl enable-linger $USER      # survive logout
+systemctl --user restart dsa110-operator-supervisor-h23
 ```
 
-To run it interactively first (before installing the service), just use the
-script — it sets the h23 defaults for you:
+The installer fills the unit's `@REPO@`/`@PYTHON@` with your clone path and the
+active env's python (override with `--python /path/to/python`). `PYTHONPATH` is
+set to `<clone>/src`, so you do **not** need `pip install -e` — only the runtime
+deps must be in that python. To run it interactively first (before installing
+the service), use the script, which sets the h23 defaults for you:
 
 ```bash
 scripts/h23_supervisor.sh
 ```
-
-The script uses whatever virtualenv/conda env is already active (e.g. the
-`dsart` env, which already has `etcd3` / `pyyaml` / `requests`) and adds `src/`
-to `PYTHONPATH`, so you do **not** need a separate venv or `pip install -e` just
-to try it. For the systemd unit, point its `ExecStart` at an interpreter that
-has those deps (a repo `.venv`, or the dsart conda python — see the comments in
-`dsa110-operator-supervisor-h23.service`).
 
 Your laptops still each run their own console over the tunnel and contend for
 the lease normally; the h23 supervisor is simply the default lease-holder that

@@ -4,10 +4,10 @@
 # is the single executor. Leave loops disabled in config/policy.yaml until
 # you intend the agent to act unprompted.
 #
-# Paths below assume the repo is at ~/dsa110-operator with `pip install -e .`
-# into %h/dsa110-operator/.venv. If your clone lives elsewhere, edit
-# WorkingDirectory and ExecStart to the absolute path. (For the on-h23,
-# no-tunnel deployment use dsa110-operator-supervisor-h23.service instead.)
+# This is a TEMPLATE: @REPO@ and @PYTHON@ are filled in for your machine by
+#   scripts/install_service.sh laptop
+# which resolves your actual clone location and your conda/venv python.
+# (For the on-h23, no-tunnel deployment use the h23 mode of the installer.)
 [Unit]
 Description=dsa110-operator autonomy supervisor (single executor)
 After=dsa110-operator-tunnel.service network-online.target
@@ -15,12 +15,13 @@ Wants=dsa110-operator-tunnel.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dsa110-operator
+WorkingDirectory=@REPO@
 # Leading '-' makes this OPTIONAL: a missing file is not a startup failure.
 EnvironmentFile=-%h/.config/dsa110-operator/operator.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=@REPO@/src
 Environment=DSA_OPERATOR_AUDIT_ROOT=%h/.local/share/dsa110-operator/audit
-ExecStart=%h/dsa110-operator/.venv/bin/python -m dsa_operator.monitor.supervisor
+ExecStart=@PYTHON@ -m dsa_operator.monitor.supervisor
 Restart=always
 RestartSec=10
 

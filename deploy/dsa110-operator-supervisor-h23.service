@@ -7,18 +7,13 @@
 # (policy-gated) health/recovery/injection/plan loops. Run AT MOST ONE of
 # these across the whole site — it is the single executor.
 #
-# IMPORTANT — paths are templated with %h (your home dir) and assume the repo
-# is cloned at ~/dsa110-operator. If your clone lives elsewhere (e.g. on the
-# DSA h23 box it is at ~/vikram/dev/dsa110-operator), edit WorkingDirectory,
-# PYTHONPATH and ExecStart below to the ABSOLUTE path of your clone before
-# installing. systemd will NOT expand shell variables here.
+# This is a TEMPLATE: @REPO@ and @PYTHON@ are filled in for your machine by
+#   scripts/install_service.sh h23
+# which resolves your actual clone location (anywhere — not just
+# ~/dsa110-operator) and your conda/venv python. Do not `cp` this file
+# directly unless you substitute those tokens yourself.
 #
-# Install as a USER unit on h23 (run as the operator account, never root):
-#   mkdir -p ~/.config/systemd/user
-#   cp deploy/dsa110-operator-supervisor-h23.service ~/.config/systemd/user/
-#   # (optional) put extra env in ~/.config/dsa110-operator/operator.env (chmod 600)
-#   systemctl --user daemon-reload
-#   systemctl --user enable --now dsa110-operator-supervisor-h23
+#   scripts/install_service.sh h23 --enable
 #   loginctl enable-linger $USER     # keep it running after logout
 #
 # The etcd/dashboard endpoints below are baked in as Environment= so the unit
@@ -36,11 +31,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dsa110-operator
+WorkingDirectory=@REPO@
 # Leading '-' makes this OPTIONAL: a missing file is NOT a startup failure.
 EnvironmentFile=-%h/.config/dsa110-operator/operator.env
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=%h/dsa110-operator/src
+Environment=PYTHONPATH=@REPO@/src
 # etcd3 ships generated protobuf code older than its bundled protobuf runtime;
 # force the pure-python impl so `import etcd3` doesn't raise at startup.
 Environment=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
@@ -49,14 +44,10 @@ Environment=DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt
 Environment=DSA_OPERATOR_ETCD_PORT=2379
 Environment=DSA_OPERATOR_DASHBOARD_PORT=5778
 Environment=DSA_OPERATOR_AUDIT_ROOT=%h/.local/share/dsa110-operator/audit
-# PYTHONPATH=.../src above means no `pip install -e` is required — only the
-# runtime deps (etcd3, pyyaml, requests) need to be in the chosen interpreter.
-# ExecStart must point at a python that HAS those deps. Either:
-#   (a) make a repo venv:  python3 -m venv .venv && .venv/bin/pip install -e '.[etcd]'
-#       and keep the line below, or
-#   (b) point it at an existing env that already has them, e.g. the dsart conda
-#       env:  ExecStart=/opt/conda/envs/dsart_h23/bin/python -m dsa_operator.monitor.supervisor
-ExecStart=%h/dsa110-operator/.venv/bin/python -m dsa_operator.monitor.supervisor
+# @PYTHON@ must have the runtime deps (etcd3, pyyaml, requests). The installer
+# defaults to your active conda/venv python; PYTHONPATH=@REPO@/src above means
+# no `pip install -e` is needed — only those deps must be present.
+ExecStart=@PYTHON@ -m dsa_operator.monitor.supervisor
 Restart=always
 RestartSec=10
 

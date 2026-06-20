@@ -30,10 +30,13 @@ your machine ──ssh──> h23 ──┬── etcd (etcdv3service.pro.pvt:23
 
 ## Install
 
+Clone it **anywhere** and install into **any** environment — a conda env is the
+common case (a venv works too). Nothing assumes `~/dsa110-operator`.
+
 ```bash
-git clone git@github.com:dsa110/dsa110-operator.git ~/dsa110-operator
-cd ~/dsa110-operator
-python3.10 -m venv .venv && . .venv/bin/activate
+git clone git@github.com:dsa110/dsa110-operator.git
+cd dsa110-operator
+conda activate myenv                    # or: python3.10 -m venv .venv && . .venv/bin/activate
 pip install -e '.[etcd,web,agent]'      # add ,dev for the test suite
 ```
 
@@ -41,9 +44,8 @@ Optional extras: `etcd` (the live etcd client), `web` (the console),
 `agent` (the Claude brain), `dev` (pytest). Without `agent` or an API key the
 console still runs with a deterministic stub assistant.
 
-> If `etcd3` fails to import with a protobuf error, run commands with
-> `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` (an upstream `etcd3`
-> packaging quirk).
+> The etcd client sets `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` itself,
+> so the upstream `etcd3`/protobuf import error is handled automatically.
 
 ## Easiest start: the startup scripts
 
@@ -56,8 +58,10 @@ scripts/h23_supervisor.sh   # on h23: runs the standing autonomy supervisor
 
 `scripts/laptop.sh` checks your `ssh h23` works, opens the self-healing tunnel,
 waits for it, mints+persists a session secret, and starts the console at
-<http://127.0.0.1:8787>; Ctrl-C tears the tunnel back down. Both scripts accept
-env overrides (see the comments at the top of each).
+<http://127.0.0.1:8787>; Ctrl-C tears the tunnel back down. Both scripts use
+whatever conda/venv is active (and add `src/` to `PYTHONPATH`, so they work even
+without `pip install -e`), and accept env overrides (see the comments at the top
+of each).
 
 ## Try it manually (no API key needed)
 
@@ -136,10 +140,21 @@ Slack) plus loopback. The host firewall is still the primary control.
 
 ## Running it as a service
 
-For an always-available console, install the three user systemd units in
-`deploy/` (tunnel, web console, and — optionally — the autonomy supervisor).
-See [`deploy/README.md`](../deploy/README.md) for the runbook. Secrets come
-from a git-ignored `EnvironmentFile`.
+For an always-available console, generate + install the user systemd units with
+the installer — it resolves your clone path and python (your active conda env by
+default), so nothing is hardcoded:
+
+```bash
+scripts/install_service.sh laptop --enable    # tunnel + web (+ optional supervisor)
+scripts/install_service.sh h23 --enable       # the standing supervisor, on h23
+loginctl enable-linger "$USER"                # keep them running after logout
+```
+
+Use `--python /path/to/python` to pin a specific interpreter, or omit `--enable`
+to install without starting. The `.service` files in `deploy/` are templates
+(`@REPO@`/`@PYTHON@` placeholders) that the installer fills in — don't `cp` them
+directly. See [`deploy/README.md`](../deploy/README.md) for the full runbook.
+Secrets come from an optional git-ignored `EnvironmentFile`.
 
 ## Multiple users
 
