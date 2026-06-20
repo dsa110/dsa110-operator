@@ -3,6 +3,12 @@
 # DSA_OPERATOR_SLACK_WEBHOOK_URL / DSA_OPERATOR_USER) come from an
 # EnvironmentFile that is NOT in git (chmod 600). Set
 # DSA_OPERATOR_ENFORCE_EGRESS=1 there to arm the in-process egress guard.
+# Without the file the console still starts (read-only/stub agent); with no
+# ANTHROPIC_API_KEY the chat falls back to the deterministic stub.
+#
+# Paths below assume the repo is at ~/dsa110-operator and that you ran
+# `pip install -e .` into %h/dsa110-operator/.venv. If your clone lives
+# elsewhere, edit WorkingDirectory and ExecStart to the absolute path.
 [Unit]
 Description=dsa110-operator web console
 After=dsa110-operator-tunnel.service network-online.target
@@ -11,7 +17,8 @@ Wants=dsa110-operator-tunnel.service
 [Service]
 Type=simple
 WorkingDirectory=%h/dsa110-operator
-EnvironmentFile=%h/.config/dsa110-operator/operator.env
+# Leading '-' makes this OPTIONAL: a missing file is not a startup failure.
+EnvironmentFile=-%h/.config/dsa110-operator/operator.env
 Environment=PYTHONUNBUFFERED=1
 Environment=DSA_OPERATOR_BIND=127.0.0.1
 Environment=DSA_OPERATOR_PORT=8787
