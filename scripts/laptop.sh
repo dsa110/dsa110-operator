@@ -58,20 +58,48 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_HOST" true 2>/dev/null; the
   exit 1
 fi
 
+# A leftover tunnel from a previous run will hold ${ETCD_PORT}, so a fresh ssh
+# can't bind it and dies with rc=255. Catch that early with a clear message
+# rather than spinning in the reconnect loop.
+if (exec 3<>"/dev/tcp/127.0.0.1/${ETCD_PORT}") 2>/dev/null; then
+  exec 3>&- 3<&-
+  echo "ERROR: 127.0.0.1:${ETCD_PORT} is already in use — a tunnel is probably" >&2
+  echo "       already running. Stop it and retry, e.g.:" >&2
+  echo "         pkill -f dsa_operator.transport.ssh_tunnel" >&2
+  echo "       (or inspect it:  lsof -nP -i :${ETCD_PORT} )" >&2
+  exit 1
+fi
+
 echo "==> opening self-healing SSH tunnel to $SSH_HOST ..."
 "$PY" -m dsa_operator.transport.ssh_tunnel --ssh-host "$SSH_HOST" \
       --etcd-port "$ETCD_PORT" &
 TUN_PID=$!
-cleanup() { echo; echo "==> stopping tunnel"; kill "$TUN_PID" 2>/dev/null || true; }
+cleanup() {
+  echo; echo "==> stopping tunnel"
+  kill "$TUN_PID" 2>/dev/null || true
+  wait "$TUN_PID" 2>/dev/null || true   # reap python + its ssh child (no orphan)
+  stty sane 2>/dev/null || true         # restore the terminal after Ctrl-C
+}
 trap cleanup EXIT INT TERM
 
 echo "==> waiting for the tunnel (etcd -> 127.0.0.1:${ETCD_PORT}) ..."
+ready=0
 for _ in $(seq 1 60); do
+  if ! kill -0 "$TUN_PID" 2>/dev/null; then
+    echo "ERROR: the tunnel process exited — see the 'ssh: ...' lines above for" >&2
+    echo "       the reason (auth, host key, or a port already in use)." >&2
+    exit 1
+  fi
   if (exec 3<>"/dev/tcp/127.0.0.1/${ETCD_PORT}") 2>/dev/null; then
-    exec 3>&- 3<&- ; break
+    exec 3>&- 3<&- ; ready=1; break
   fi
   sleep 0.5
 done
+if [[ "$ready" != "1" ]]; then
+  echo "ERROR: tunnel did not come up within 30s. Check the log above; try a" >&2
+  echo "       manual run:  $PY -m dsa_operator.transport.ssh_tunnel --ssh-host $SSH_HOST" >&2
+  exit 1
+fi
 
 echo "==> starting console at http://127.0.0.1:${PORT}   (no login)"
 DSA_OPERATOR_PORT="$PORT" "$PY" -m dsa_operator.web.app

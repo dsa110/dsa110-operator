@@ -31,7 +31,9 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Optional, Sequence
@@ -145,6 +147,10 @@ class SshTunnel:
         self.ssh_binary = ssh_binary
         self.extra_opts = list(extra_opts) if extra_opts else []
         self._proc: Optional[subprocess.Popen] = None
+        # Keep the last few lines ssh wrote so we can show *why* it exited
+        # (e.g. "bind: Address already in use") instead of a bare rc=255.
+        self._output: "deque[str]" = deque(maxlen=50)
+        self._reader: Optional[threading.Thread] = None
 
     @property
     def command(self) -> list[str]:
@@ -158,6 +164,7 @@ class SshTunnel:
             return
         cmd = self.command
         LOG.info("opening ssh tunnel: %s", " ".join(cmd))
+        self._output.clear()
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -165,6 +172,27 @@ class SshTunnel:
             stderr=subprocess.STDOUT,
             text=True,
         )
+        # Drain ssh's output on a daemon thread so the pipe never fills and we
+        # always have its diagnostics handy if it dies.
+        self._reader = threading.Thread(target=self._drain, daemon=True)
+        self._reader.start()
+
+    def _drain(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    self._output.append(line)
+                    LOG.debug("ssh: %s", line)
+        except Exception:                                  # noqa: BLE001
+            pass
+
+    def recent_output(self) -> list[str]:
+        """The last lines ssh emitted (most useful right after it exits)."""
+        return list(self._output)
 
     def wait_ready(self, timeout: float = 15.0) -> bool:
         """Block until all forwarded local ports accept connections.
@@ -176,7 +204,18 @@ class SshTunnel:
         while time.monotonic() < deadline:
             if self._proc is None or self._proc.poll() is not None:
                 rc = None if self._proc is None else self._proc.returncode
+                # Give the reader a beat to flush ssh's final lines, then show
+                # them — this is where "Address already in use" appears.
+                if self._reader is not None:
+                    self._reader.join(timeout=1.0)
                 LOG.error("ssh tunnel exited early (rc=%s)", rc)
+                for line in self.recent_output():
+                    LOG.error("  ssh: %s", line)
+                if rc == 255 and any("address already in use" in s.lower()
+                                     or "cannot listen to port" in s.lower()
+                                     for s in self.recent_output()):
+                    LOG.error("  -> a local forward port is already taken; "
+                              "another tunnel is probably already running.")
                 return False
             if all(_port_open(f.local_port) for f in self.forwards):
                 LOG.info("ssh tunnel ready (%d forwards)", len(self.forwards))
