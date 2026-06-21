@@ -295,6 +295,57 @@ def test_supervisor_respects_health_cadence(tmp_path):
     assert "health" in t2.ran
 
 
+def test_standing_executor_lease_handoff():
+    """A schedule armed on a laptop must keep running on h23 after the laptop
+    releases control. The supervisor holds the lease when free, YIELDS to a
+    human takeover, and RECLAIMS automatically the moment they release it."""
+    from dsa_operator.control.lease import ExecutorLease
+    from dsa_operator.monitor.supervisor import maintain_lease
+
+    backend = FakeOperatorBackend()
+    writer = OperatorEtcdWriter(backend)
+    sup = ExecutorLease(writer, host="h23")            # the standing supervisor
+    op = ExecutorLease(writer, host="laptop")          # an operator console
+
+    # startup: lease is free -> supervisor takes it, then just holds it.
+    assert maintain_lease(sup, "agent", "supervisor") == "acquired"
+    assert maintain_lease(sup, "agent", "supervisor") == "held"
+
+    # operator takes over from the console to arm a plan.
+    assert op.takeover("vikram", "laptop-sid") is True
+    # supervisor notices and steps back to monitor-only (no fighting).
+    assert maintain_lease(sup, "agent", "supervisor") == "monitor_only"
+    assert maintain_lease(sup, "agent", "supervisor") == "monitor_only"
+    assert sup.holder().actor == "vikram"
+
+    # operator releases the lease -> supervisor reclaims on its next heartbeat.
+    assert op.release("laptop-sid") is True
+    assert maintain_lease(sup, "agent", "supervisor") == "acquired"
+    assert sup.holder().actor == "agent"
+    assert maintain_lease(sup, "agent", "supervisor") == "held"
+
+
+def test_standing_executor_reclaims_after_operator_lapse():
+    """Even if the operator never cleanly releases (laptop sleeps), the lease
+    lapses and the supervisor reclaims it."""
+    from dsa_operator.control.lease import ExecutorLease
+    from dsa_operator.monitor.supervisor import maintain_lease
+
+    clock = type("C", (), {"t": 1000.0})()
+    now = lambda: clock.t
+    backend = FakeOperatorBackend(now=now)
+    writer = OperatorEtcdWriter(backend)
+    sup = ExecutorLease(writer, ttl_s=30, host="h23", now=now)
+    op = ExecutorLease(writer, ttl_s=30, host="laptop", now=now)
+
+    maintain_lease(sup, "agent", "supervisor")
+    op.takeover("vikram", "laptop-sid")
+    assert maintain_lease(sup, "agent", "supervisor") == "monitor_only"
+    clock.t += 31                                        # laptop slept past TTL
+    assert maintain_lease(sup, "agent", "supervisor") == "acquired"
+    assert sup.holder().actor == "agent"
+
+
 def test_autonomy_config_from_policy():
     pol = load_policy()                # the shipped config/policy.yaml
     cfg = AutonomyConfig.from_policy(pol)

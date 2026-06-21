@@ -290,12 +290,42 @@ class AutonomySupervisor:
         LOG.info("autonomy supervisor stopped")
 
 
+def maintain_lease(lease: Any, actor: str, session_id: str) -> str:
+    """One heartbeat of a *standing* executor's lease ownership.
+
+    The standing supervisor should hold the executor lease whenever it is
+    free, but **yield** to a human who takes over and **reclaim** the moment
+    that human releases it (or their session lapses). ``acquire()`` is a no-op
+    while another session holds the lease, so calling it whenever we don't hold
+    it gives exactly that arbitration — there is never a fight, and recovery is
+    automatic.
+
+    Returns one of:
+
+    * ``"held"``         — we already hold it; just refreshed.
+    * ``"acquired"``     — it was free and we (re)claimed it (startup, or after
+      the operator released control / their session lapsed).
+    * ``"monitor_only"`` — someone else holds it; we stay read-only for now.
+    """
+    state = lease.keepalive()
+    if state == "held":
+        return "held"
+    # "idle" (we hold nothing) or "lost" (taken over / lapsed): reclaim iff free.
+    return "acquired" if lease.acquire(actor, session_id) else "monitor_only"
+
+
 def main() -> int:  # pragma: no cover
     """Standing-executor entrypoint: ``python -m dsa_operator.monitor.supervisor``.
 
-    Wires the real engine + tools over the SSH-forwarded etcd/dashboard,
-    acquires the executor lease as session ``"supervisor"`` (so the mutating
-    loops are eligible), and runs the tick loop until SIGINT/SIGTERM.
+    Wires the real engine + tools over the SSH-forwarded etcd/dashboard and
+    runs the tick loop until SIGINT/SIGTERM. It tries to hold the executor
+    lease as session ``"supervisor"`` (so the mutating loops are eligible), but
+    starts in monitor-only mode if a human already holds control and
+    **automatically takes over the moment they release it** — so a schedule
+    armed from a laptop keeps running here after the laptop releases the lease
+    (or sleeps). No policy change is needed for that: ``autonomy.run_plan`` is
+    on by default; real (vs shadow) execution still needs ``mode: live`` +
+    promotion, exactly as in the console.
     """
     import argparse
     import os
@@ -321,11 +351,13 @@ def main() -> int:  # pragma: no cover
     tools = _default_tools_factory(audit)("agent")
     sid = "supervisor"
 
-    if not engine.lease.acquire(args.actor, sid):
-        LOG.error("could not acquire executor lease (held by %s) — refusing to "
-                  "start mutating loops; another instance is in charge",
-                  engine.lease.holder())
-        return 1
+    if maintain_lease(engine.lease, args.actor, sid) == "acquired":
+        LOG.info("acquired executor lease as %s/%s", args.actor, sid)
+    else:
+        h = engine.lease.holder()
+        LOG.warning("executor lease currently held by %s — starting MONITOR-ONLY; "
+                    "will take over automatically when it is released",
+                    h.actor if h else "?")
 
     plan_store = PlanStore(engine._writer, engine._read)  # type: ignore[attr-defined]
     # The sequencer runs the full bring-up (point -> fstable -> start/restart
@@ -349,21 +381,26 @@ def main() -> int:  # pragma: no cover
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    # Keep the lease warm alongside the tick loop. If this host sleeps the
-    # lease lapses; on wake keepalive() reports "lost" and we re-acquire so the
-    # standing executor heals itself (re-acquire only succeeds if no one else
-    # grabbed control meanwhile — exactly the arbitration we want).
+    # Keep the lease warm alongside the tick loop, and (re)claim it whenever it
+    # is free: if this host sleeps the lease lapses and we retake it on wake; if
+    # an operator takes over from a console we yield, then automatically take
+    # back over when they release (or their session lapses) so an armed plan
+    # keeps running here. acquire() only succeeds when the lease is free, so
+    # this never fights a live operator.
     def _refresh():
+        prev = "acquired"
         while not stop.wait(min(10.0, cfg.min_interval_s)):
             try:
-                if engine.lease.keepalive() == "lost":
-                    if engine.lease.acquire(args.actor, sid):
-                        LOG.warning("re-acquired executor lease after a lapse")
-                    else:
-                        h = engine.lease.holder()
-                        LOG.warning("lease lapsed and is now held by %s — "
-                                    "standing executor is monitor-only",
-                                    h.actor if h else "?")
+                state = maintain_lease(engine.lease, args.actor, sid)
+                if state == "acquired" and prev == "monitor_only":
+                    LOG.warning("reclaimed executor lease — standing executor is "
+                                "driving again (operator released control)")
+                elif state == "monitor_only" and prev != "monitor_only":
+                    h = engine.lease.holder()
+                    LOG.info("executor lease held by %s — standing executor is "
+                             "monitor-only until it is released",
+                             h.actor if h else "?")
+                prev = state
             except Exception:                                  # noqa: BLE001
                 LOG.exception("lease keepalive failed")
     threading.Thread(target=_refresh, daemon=True).start()
@@ -374,7 +411,8 @@ def main() -> int:  # pragma: no cover
     return 0
 
 
-__all__ = ["AutonomyConfig", "SupervisorTick", "AutonomySupervisor", "main"]
+__all__ = ["AutonomyConfig", "SupervisorTick", "AutonomySupervisor",
+           "maintain_lease", "main"]
 
 
 if __name__ == "__main__":  # pragma: no cover

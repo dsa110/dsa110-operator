@@ -306,6 +306,30 @@ periodic injection health-checks, and ticks the *armed* observing plan.
   [Observing plans](#observing-plans)). The two never both act — only whoever
   holds the single lease does.
 
+#### Handing a running schedule off to h23
+
+Because the armed plan lives in `h23`'s etcd (not in your browser), it survives
+you walking away. The handoff is automatic via the single lease:
+
+1. Arm + start the schedule from your laptop (your console holds the lease and
+   its autopilot drives the bring-up).
+2. Click **Release** in the **Control** tab (or just let the laptop sleep — the
+   lease lapses after ~30 s).
+3. The standing supervisor on h23 **reclaims the now-free lease on its next
+   heartbeat (≤10 s) and continues the same armed plan** from wherever it is.
+   It steps back to monitor-only while you hold control, then takes over the
+   moment you release — it never fights you for the lease.
+
+**No policy change is needed for this.** `autonomy.run_plan` is on by default,
+and the supervisor obeys the *same* `shadow`/`live` + promotion gates as the
+console — so to make h23 actually move antennas (not dry-run), it needs
+`mode: live` + the relevant actions promoted, exactly as in
+[Going live](#going-live-flipping-the-policy). The only requirement is that the
+supervisor process is actually running on h23 (`python -m
+dsa_operator.monitor.supervisor` or its systemd unit); start it any time — if
+your laptop holds the lease when it boots, it starts monitor-only and takes
+over automatically once you release.
+
 From the web tab you can see status and force a monitor refresh; the mutating
 loops stay gated unless the supervisor session holds the lease.
 
