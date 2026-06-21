@@ -149,6 +149,20 @@ def test_pointing_endpoint(client):
     assert j["data"]["target_dec_deg"] == 54.5
 
 
+def test_status_endpoint_rollup(client):
+    """The status bar's one-shot poll: mode, e-stop, system_state, pointing,
+    lease, plan — all present and read from the live tools."""
+    j = client.get("/api/status").get_json()
+    assert j["ok"] is True
+    d = j["data"]
+    assert d["mode"] == "shadow"
+    assert d["paused"] is False
+    assert d["system_state"]["state"] == "OBSERVING"
+    assert d["pointing"]["target_dec_deg"] == 54.5
+    assert d["pointing"]["n_not_settled"] == 0     # /mon/ant/1 drv_state=2 == settled
+    assert "lease" in d and "plan" in d
+
+
 def test_mon_rejects_out_of_scope_key(client):
     r = client.get("/api/mon?key=/cnf/secret")
     assert r.status_code == 400
@@ -194,7 +208,7 @@ def test_mutating_routes_are_exactly_the_known_set(app):
         "/api/approvals/<approval_id>/grant", "/api/pause", "/api/resume",
             # Phase 4 observing plan (lease-gated; pointing still flows the engine):
             "/api/plan", "/api/plan/clear", "/api/plan/tick", "/api/plan/preview",
-            "/api/plan/sequence", "/api/plan/arm", "/api/plan/disarm",
+            "/api/plan/sequence", "/api/plan/step", "/api/plan/arm", "/api/plan/disarm",
             # Phase 5 autonomy (monitor-only from the web; mutations gated by lease):
             "/api/autonomy/tick",
         }

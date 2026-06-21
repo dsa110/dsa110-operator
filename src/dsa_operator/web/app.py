@@ -143,6 +143,7 @@ def create_app(
     read_etcd: Optional[Any] = None,
     secret_key: Optional[str] = None,
     lease_keepalive: bool = False,
+    observing_autopilot: bool = False,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.secret_key = (
@@ -223,6 +224,60 @@ def create_app(
     @app.route("/api/whoami")
     def whoami():
         return jsonify({"user": require_user()})
+
+    @app.route("/api/status")
+    def api_status():
+        """Compact roll-up for the top status bar: policy mode, e-stop,
+        dashboard system_state, antenna motion, pointing, the executor lease,
+        and the observing-plan stage — one poll instead of five."""
+        require_user()
+        out: dict[str, Any] = {"mode": getattr(control.policy, "mode", "?")}
+        try:
+            out["paused"] = control.is_paused()
+        except Exception:                                  # noqa: BLE001
+            out["paused"] = None
+        tools = _tools_for_request()
+        try:
+            fleet = tools.get_fleet_status()
+            out["system_state"] = (fleet or {}).get("system_state")
+            out["corr"] = (fleet or {}).get("corr")
+            out["search"] = (fleet or {}).get("search")
+        except Exception as exc:                           # noqa: BLE001
+            out["system_state"] = {"error": str(exc)}
+        try:
+            pt = tools.get_array_pointing() or {}
+            out["pointing"] = {
+                "target_dec_deg": pt.get("target_dec_deg"),
+                "mean_commanded_el_deg": pt.get("mean_commanded_el_deg"),
+                "n_not_settled": pt.get("n_not_settled"),
+                "n_antennas_reporting": pt.get("n_antennas_reporting"),
+            }
+        except Exception as exc:                           # noqa: BLE001
+            out["pointing"] = {"error": str(exc)}
+        try:
+            h = control.lease.holder()
+            out["lease"] = {
+                "holder": h.to_json() if h else None,
+                "you_hold_it": bool(h and h.session_id == current_sid()),
+            }
+        except Exception:                                  # noqa: BLE001
+            out["lease"] = None
+        try:
+            plan = plan_store.get()
+            if plan is not None:
+                now = time.time()
+                active = plan.active_at(now)
+                out["plan"] = {
+                    "armed": plan.armed, "armed_by": plan.armed_by,
+                    "n_segments": len(plan.segments),
+                    "active_dec": active.dec_deg if active else None,
+                    "active_label": active.label if active else None,
+                }
+            else:
+                out["plan"] = None
+        except Exception:                                  # noqa: BLE001
+            out["plan"] = None
+        return jsonify({"ok": True, "data": out})
 
     # -- read-only API --------------------------------------------------------
     def _ro(method: str):
@@ -526,6 +581,21 @@ def create_app(
         result = runner.apply()
         return jsonify({"ok": True, "data": result.to_json()})
 
+    @app.route("/api/plan/step", methods=["POST"])
+    def api_plan_step():
+        """Advance the ARMED plan's full bring-up by one step (point -> fstable
+        -> modes -> start/restart -> warm -> arm) and report the current stage
+        / any blocker. The console autopilot normally does this on a cadence;
+        this lets a human nudge or inspect it. Executor only."""
+        user = require_user()
+        _require_executor()
+        from dsa_operator.observing.session import (
+            ObservingSequencer, ToolsSiteState)
+        seq = ObservingSequencer(control, plan_store,
+                                 ToolsSiteState(tools_factory(user)),
+                                 actor=user, session_id=current_sid())
+        return jsonify({"ok": True, "data": seq.apply().to_json()})
+
     @app.route("/api/plan/preview", methods=["POST", "GET"])
     def api_plan_preview():
         user = require_user()
@@ -610,6 +680,59 @@ def create_app(
         threading.Thread(target=_lease_keepalive_loop, args=(_ka_stop,),
                          daemon=True, name="lease-keepalive").start()
 
+    # -- observing autopilot --------------------------------------------------
+    # Arming a plan only flips a flag; SOMETHING has to tick the bring-up
+    # sequencer (point -> fstable -> modes -> start/restart -> warm -> arm) for
+    # the array to actually come up. A standing executor on h23 does this when
+    # it holds the lease, but in the laptop/web deployment the operator holds
+    # the lease (they had to, to arm), so nothing was driving the sequence —
+    # an armed plan just sat there. This loop closes that gap: when THIS
+    # console process holds the executor lease and a plan is armed, it advances
+    # the sequencer on the plan cadence, acting as the lease holder. It stays
+    # idle when an external process (e.g. h23) holds the lease, so the two
+    # never both drive — only the single lease holder does. Every step still
+    # goes through the full ControlEngine gauntlet (e-stop, lockout, gate,
+    # shadow/live), so this widens *nothing* the operator couldn't already do.
+    def _observing_autopilot_loop(stop: threading.Event) -> None:
+        from dsa_operator.observing.session import (
+            ObservingSequencer, ToolsSiteState)
+        cfg = AutonomyConfig.from_policy(control.policy)
+        period = max(5.0, float(cfg.plan_s))
+        st: dict[str, Any] = {"sid": None, "seq": None}
+        while not stop.wait(period):
+            try:
+                if not control.lease.mine():
+                    st["sid"] = None
+                    st["seq"] = None
+                    continue
+                plan = plan_store.get()
+                if plan is None or not plan.armed:
+                    st["sid"] = None
+                    st["seq"] = None
+                    continue
+                holder = control.lease.holder()
+                if holder is None:
+                    continue
+                if st["seq"] is None or st["sid"] != holder.session_id:
+                    st["sid"] = holder.session_id
+                    st["seq"] = ObservingSequencer(
+                        control, plan_store,
+                        ToolsSiteState(tools_factory(holder.actor)),
+                        actor=holder.actor, session_id=holder.session_id)
+                res = st["seq"].apply()
+                step = (res.to_json() or {}).get("step") or {}
+                if step.get("action") or step.get("blocked"):
+                    LOG.info("observing autopilot: stage=%s — %s",
+                             res.stage, step.get("detail", res.reason))
+            except Exception:                              # noqa: BLE001
+                LOG.exception("observing autopilot tick failed (continuing)")
+
+    if observing_autopilot:
+        _ap_stop = threading.Event()
+        app._observing_autopilot_stop = _ap_stop           # type: ignore[attr-defined]
+        threading.Thread(target=_observing_autopilot_loop, args=(_ap_stop,),
+                         daemon=True, name="observing-autopilot").start()
+
     return app
 
 
@@ -619,7 +742,7 @@ def main() -> int:  # pragma: no cover
     from dsa_operator.env import load_secrets
     load_secrets()
     maybe_install_from_env()
-    app = create_app(lease_keepalive=True)
+    app = create_app(lease_keepalive=True, observing_autopilot=True)
     host = os.environ.get("DSA_OPERATOR_BIND", "127.0.0.1")
     port = int(os.environ.get("DSA_OPERATOR_PORT", "8787"))
     app.run(host=host, port=port)

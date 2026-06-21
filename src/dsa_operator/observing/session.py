@@ -101,7 +101,18 @@ class SiteState(Protocol):
 
 
 def _data(d: Any) -> dict[str, Any]:
-    return d.get("data", {}) if isinstance(d, dict) else {}
+    """Normalize a tool return into the payload dict.
+
+    ``ReadOnlyTools`` methods return the summary dict *directly* (e.g.
+    ``{"target_dec_deg": ...}``), while some callers/transports wrap it as
+    ``{"ok": True, "data": {...}}``. Accept both: prefer an explicit ``data``
+    envelope, else use the dict as-is. (Previously this always unwrapped
+    ``data`` and so returned ``{}`` for the real ReadOnlyTools, leaving the
+    sequencer blind to commanded dec / settle / fleet state / fstable.)"""
+    if not isinstance(d, dict):
+        return {}
+    inner = d.get("data")
+    return inner if isinstance(inner, dict) else d
 
 
 class ToolsSiteState:

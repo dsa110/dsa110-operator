@@ -15,6 +15,70 @@ from dsa_operator.observing.runner import PlanRunner
 from dsa_operator.policy import load_policy
 
 
+# -- ToolsSiteState (the sequencer's read-only view of the site) ------------
+
+class _RawTools:
+    """Mimics ReadOnlyTools: methods return the summary dict DIRECTLY."""
+
+    def get_array_pointing(self):
+        return {"target_dec_deg": 16.27, "n_not_settled": 0,
+                "mean_commanded_el_deg": 69.0}
+
+    def get_fleet_status(self):
+        return {"corr": {"n_reporting": 16},
+                "system_state": {"state": "prepared", "safe_to_arm": True}}
+
+    def get_fstable_status(self, dec_deg):
+        return {"all_ready": True, "dec_deg": dec_deg}
+
+
+class _WrappedTools(_RawTools):
+    """Mimics a transport that wraps the payload as {"ok":..., "data": {...}}."""
+
+    def get_array_pointing(self):
+        return {"ok": True, "data": super().get_array_pointing()}
+
+    def get_fleet_status(self):
+        return {"ok": True, "data": super().get_fleet_status()}
+
+    def get_fstable_status(self, dec_deg):
+        return {"ok": True, "data": super().get_fstable_status(dec_deg)}
+
+
+@pytest.mark.parametrize("tools_cls", [_RawTools, _WrappedTools])
+def test_tools_site_state_reads_both_shapes(tools_cls):
+    # Regression: previously _data() always unwrapped a "data" key, so for the
+    # real (raw) ReadOnlyTools every read came back blank and the sequencer was
+    # blind (mis-pointed, blocked on settle/warm). It must read both shapes.
+    from dsa_operator.observing.session import ToolsSiteState
+    site = ToolsSiteState(tools_cls())
+    assert site.commanded_dec() == pytest.approx(16.27)
+    assert site.n_not_settled() == 0
+    assert site.fleet_state() == {"state": "prepared", "safe_to_arm": True}
+    assert site.fstable_status(16.27)["all_ready"] is True
+
+
+def test_bringup_reaches_arm_with_raw_tools():
+    # End-to-end-ish: with raw ReadOnlyTools-shaped reads and a warmed, on-target
+    # site, the bring-up state machine must walk to ARM/DONE rather than block.
+    from dsa_operator.observing.session import BringUp, Stage, ToolsSiteState
+    eng = _bringup_engine()
+    eng.lease.acquire("agent", "supervisor")
+    bu = BringUp(eng, ToolsSiteState(_RawTools()), dec_deg=16.27,
+                 actor="agent", session_id="supervisor", ensure_fstable=True)
+    bu.run(max_steps=20)
+    assert bu.stage in (Stage.DONE, Stage.ARM), f"stuck at {bu.stage} ({bu.reason})"
+
+
+def _bringup_engine():
+    import tempfile
+    writer = OperatorEtcdWriter(FakeOperatorBackend())
+    read = ReadOnlyEtcd(FakeEtcdReader({}))
+    return ControlEngine(load_policy(), ExecutorLease(writer), ApprovalStore(),
+                         AuditLog(tempfile.mkdtemp()), writer=writer,
+                         read_etcd=read)
+
+
 # -- astro ------------------------------------------------------------------
 
 def test_dec_to_el_and_back():

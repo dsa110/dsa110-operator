@@ -13,6 +13,33 @@
              padding: 10px 18px; background: var(--panel); border-bottom:1px solid var(--border); }
     header .who { color: var(--mut); font-size: 13px; }
     header .ro { color:#74b9ff; font-size:12px; border:1px solid #335; padding:2px 8px; border-radius:9px; }
+
+    /* -- status bar -- */
+    #statusbar { display:flex; flex-wrap:wrap; gap:8px; padding:8px 16px;
+                 background:#10171f; border-bottom:1px solid var(--border);
+                 align-items:center; font-size:12px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
+            border-radius:999px; border:1px solid var(--border); background:#0c1116; }
+    .pill .k { color:var(--mut); }
+    .pill b { font-weight:600; }
+    .pill.ok    { border-color:#2f6b3a; }
+    .pill.warn  { border-color:#8a6d1f; }
+    .pill.alert { border-color:#7a2b2b; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); }
+    .dot.green{background:#4ade80;} .dot.amber{background:#fbbf24;}
+    .dot.red{background:#f87171;} .dot.blue{background:#60a5fa;}
+
+    /* -- layout: tabs (left) + persistent chat (right) -- */
+    .layout { display:flex; align-items:stretch; min-height: calc(100vh - 96px); }
+    main.left { flex:1; min-width:0; }
+    aside.chat-dock { width:380px; flex:none; border-left:1px solid var(--border);
+                      background:var(--panel); display:flex; flex-direction:column; padding:12px; }
+    aside.chat-dock h3 { margin:0 0 8px; font-size:14px; }
+    @media (max-width: 900px) {
+      .layout { flex-direction:column; }
+      aside.chat-dock { width:auto; border-left:none; border-top:1px solid var(--border); }
+    }
+
     nav.tabs { display:flex; gap:4px; padding:8px 16px 0; background:var(--panel);
                border-bottom:1px solid var(--border); }
     nav.tabs button { background:transparent; border:1px solid transparent; border-bottom:none;
@@ -23,6 +50,7 @@
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
     .card { background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px; margin-bottom:16px; }
     .card h3 { margin:0 0 8px; font-size:14px; }
+    .hint { color:var(--mut); font-size:12px; margin:4px 0 8px; }
     pre { background:#0c1116; border:1px solid var(--border); border-radius:8px;
           padding:10px; overflow:auto; max-height:260px; font-size:12px; color:#cdd6df; }
     .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
@@ -34,15 +62,18 @@
              border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
     button:hover { background:#3a4654; }
     button.danger { border-color:#7a2b2b; }
-    #log { display:flex; flex-direction:column; gap:10px; max-height:340px; overflow:auto; }
+    button.linkish { background:transparent; border:1px dashed #3d4854; color:var(--mut); }
+    /* chat */
+    #log { display:flex; flex-direction:column; gap:10px; flex:1; overflow:auto; }
     .msg { padding:8px 12px; border-radius:8px; font-size:14px; white-space:pre-wrap; }
-    .me { background:#22303f; align-self:flex-end; max-width:75%; }
-    .bot { background:#15202b; border:1px solid var(--border); max-width:90%; }
+    .me { background:#22303f; align-self:flex-end; max-width:85%; }
+    .bot { background:#15202b; border:1px solid var(--border); max-width:95%; }
     .tools { color:var(--mut); font-size:11px; margin-top:6px; }
     form.ask { display:flex; gap:8px; margin-top:10px; }
     form.ask input { flex:1; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
+    code { background:#0c1116; padding:1px 4px; border-radius:4px; }
   </style>
 </head>
 <body>
@@ -51,40 +82,45 @@
     <div class="who">{{ user }} · agent: {{ agent_model }}</div>
   </header>
 
+  <!-- ===================== STATUS BAR ===================== -->
+  <div id="statusbar" title="Live telescope + control status (auto-refreshes)">
+    <span class="pill" id="sb-mode"><span class="k">mode</span> <b>…</b></span>
+    <span class="pill" id="sb-estop"><span class="k">e-stop</span> <b>…</b></span>
+    <span class="pill" id="sb-system"><span class="dot"></span><span class="k">system</span> <b>…</b></span>
+    <span class="pill" id="sb-ant"><span class="dot"></span><span class="k">antennas</span> <b>…</b></span>
+    <span class="pill" id="sb-dec"><span class="k">dec</span> <b>…</b></span>
+    <span class="pill" id="sb-plan"><span class="dot"></span><span class="k">plan</span> <b>…</b></span>
+    <span class="pill" id="sb-lease"><span class="dot"></span><span class="k">control</span> <b>…</b></span>
+  </div>
+
+  <div class="layout">
+  <main class="left">
   <nav class="tabs">
-    <button data-tab="monitor" class="active" onclick="showTab('monitor')">Monitor</button>
-    <button data-tab="control" onclick="showTab('control')">Control</button>
-    <button data-tab="plan" onclick="showTab('plan')">Plan</button>
-    <button data-tab="autonomy" onclick="showTab('autonomy')">Autonomy</button>
+    <button data-tab="monitor" class="active" onclick="showTab('monitor')"
+            title="Read-only live state of the telescope">Monitor</button>
+    <button data-tab="control" onclick="showTab('control')"
+            title="Take the executor lease, run gated control actions, handle e-stop/approvals">Control</button>
+    <button data-tab="plan" onclick="showTab('plan')"
+            title="Stage / arm an observing plan; the autopilot brings the array up">Plan</button>
+    <button data-tab="autonomy" onclick="showTab('autonomy')"
+            title="Standing health / recovery / injection / plan loops">Autonomy</button>
   </nav>
 
   <!-- ===================== MONITOR ===================== -->
   <section id="tab-monitor" class="tab active">
-    <div class="grid2">
-      <div class="card">
-        <h3>Live state</h3>
-        <div class="row">
-          <button onclick="load('/api/fleet','mon')">Fleet</button>
-          <button onclick="load('/api/pointing','mon')">Pointing</button>
-          <button onclick="load('/api/sky','mon')">Sky</button>
-          <button onclick="load('/api/rfi','mon')">RFI</button>
-          <button onclick="load('/api/injections','mon')">Injections</button>
-          <button onclick="load('/api/candidates','mon')">Candidates</button>
-          <button onclick="load('/api/audit','mon')">Audit</button>
-        </div>
-        <pre id="mon">Pick a view…</pre>
+    <div class="card">
+      <h3>Live state</h3>
+      <p class="hint">Read-only snapshots straight from etcd + the dashboard. Or just ask the assistant on the right.</p>
+      <div class="row">
+        <button onclick="load('/api/fleet','mon')" title="Per-node corr/search heartbeats + the dashboard system-state banner">Fleet</button>
+        <button onclick="load('/api/pointing','mon')" title="Commanded array declination, mean elevation, and how many dishes haven't settled">Pointing</button>
+        <button onclick="load('/api/sky','mon')" title="Static-sky monitor frame + per-chgroup snapshot freshness">Sky</button>
+        <button onclick="load('/api/rfi','mon')" title="Per-chgroup RFI ring health (flag fractions)">RFI</button>
+        <button onclick="load('/api/injections','mon')" title="Active injections, recent matches, and the C2 snapshot">Injections</button>
+        <button onclick="load('/api/candidates','mon')" title="Recent C2 burst-candidate directories">Candidates</button>
+        <button onclick="load('/api/audit','mon')" title="Recent operator + control audit rows">Audit</button>
       </div>
-      <div class="card">
-        <h3>Ask the operator assistant</h3>
-        <div id="log"></div>
-        <form class="ask" onsubmit="return ask(event)">
-          <input id="q" placeholder="e.g. point to dec 44; or: are all nodes up?" autocomplete="off" />
-          <button type="submit">Ask</button>
-        </form>
-        <p style="color:var(--mut);font-size:12px;">The assistant can also
-          <em>operate</em> the array when this session holds the executor lease
-          (see Control) — every action still passes the policy gates.</p>
-      </div>
+      <pre id="mon">Pick a view…</pre>
     </div>
   </section>
 
@@ -93,45 +129,49 @@
     <div class="grid2">
       <div class="card">
         <h3>Executor lease</h3>
-        <p style="color:var(--mut);font-size:12px;">Only the one session holding
-          the lease may run control actions.</p>
+        <p class="hint">Only the one session holding the lease may run control
+          actions (and the autopilot brings up an armed plan only while THIS
+          session holds it).</p>
         <div class="row">
-          <button onclick="acquireLease()">Acquire</button>
-          <button onclick="releaseLease()">Release</button>
-          <button onclick="takeoverLease()" class="danger">Take over</button>
-          <button onclick="refreshLease()">Status</button>
+          <button onclick="acquireLease()" title="Take exclusive control. Required before you can run any control action or arm a plan.">Acquire</button>
+          <button onclick="releaseLease()" title="Give up control so another session (or the h23 standing executor) can take it.">Release</button>
+          <button onclick="takeoverLease()" class="danger" title="Forcibly seize control from the current holder (audited). Use if a holder is stale/away.">Take over</button>
+          <button onclick="refreshLease()" title="Re-read who currently holds the lease">Status</button>
         </div>
         <pre id="lease">lease status…</pre>
       </div>
       <div class="card">
         <h3>Human authority &amp; e-stop</h3>
         <div class="row">
-          <button onclick="load('/api/authority','authority')">Authority</button>
-          <button onclick="load('/api/observation','authority')">Observation</button>
-          <button onclick="pause()" class="danger">Pause (e-stop)</button>
-          <button onclick="resume()">Resume</button>
+          <button onclick="load('/api/authority','authority')" title="What the dsa110-rt dashboard is asserting over the agent (enabled? pinned executor?)">Authority</button>
+          <button onclick="load('/api/observation','authority')" title="Live recording status vs the dashboard's max-observation-seconds cap">Observation</button>
+          <button onclick="pause()" class="danger" title="Engage the e-stop: ALL mutating actions fail closed immediately. Reads keep working.">Pause (e-stop)</button>
+          <button onclick="resume()" title="Disengage the e-stop (executor only)">Resume</button>
         </div>
         <pre id="authority">dashboard authority…</pre>
       </div>
     </div>
     <div class="card">
       <h3>Propose a control action</h3>
+      <p class="hint">Runs through the full gate engine: returns <code>denied</code>,
+        <code>needs_approval</code>, <code>shadow</code> (dry-run — nothing
+        physically changed), or <code>executed</code>.</p>
       <div class="row">
         <label>action</label>
-        <select id="ctl-action" onchange="ctlActionHint()"></select>
+        <select id="ctl-action" onchange="ctlActionHint()" title="The control verb to run"></select>
         <span id="ctl-gate" style="font-size:12px;color:var(--mut);"></span>
       </div>
       <div class="row"><label>params (JSON)</label></div>
       <textarea id="ctl-params" placeholder='{"dec_deg": 44.0}'>{}</textarea>
       <div class="row" style="margin-top:8px;">
-        <button onclick="proposeAction()">Propose / run</button>
-        <button onclick="requestApproval()">Request approval</button>
+        <button onclick="proposeAction()" title="Submit the action to the gate engine">Propose / run</button>
+        <button onclick="requestApproval()" title="Register a pending approval a human can grant in the console (for approval-gated actions)">Request approval</button>
       </div>
       <pre id="ctl-out">decision…</pre>
     </div>
     <div class="card">
       <h3>Pending approvals</h3>
-      <button onclick="refreshApprovals()">Refresh</button>
+      <button onclick="refreshApprovals()" title="Reload the list of approvals awaiting a human grant">Refresh</button>
       <table><thead><tr><th>id</th><th>action</th><th>params</th><th>by</th>
         <th>granted</th><th>expires</th><th></th></tr></thead>
         <tbody id="appr-rows"><tr><td colspan="7" style="color:var(--mut)">none</td></tr></tbody>
@@ -142,23 +182,42 @@
   <!-- ===================== PLAN ===================== -->
   <section id="tab-plan" class="tab">
     <div class="card">
-      <h3>Active observing plan</h3>
+      <h3>How an observing plan works</h3>
+      <p class="hint">
+        1. <b>Stage</b> a plan (below, or just ask the assistant) — it does
+        <em>nothing</em> yet. &nbsp; 2. <b>Preview bring-up</b> to see the exact
+        steps. &nbsp; 3. <b>Arm</b> it. Once armed, the <b>autopilot</b> runs the
+        bring-up automatically (point → fringe-stop table → modes → start/restart
+        fleet → wait for warm-up → <code>utc_start</code>), one step every ~30 s,
+        for as long as <em>you hold the executor lease</em>. Use <b>Advance
+        bring-up</b> to step it by hand / see where it is.
+      </p>
       <div class="row">
-        <button onclick="load('/api/plan','plan-out')">View plan</button>
-        <button onclick="planPost('/api/plan/sequence','plan-out')">Preview bring-up</button>
-        <button onclick="planPost('/api/plan/arm','plan-out')">Arm (executor)</button>
-        <button onclick="planPost('/api/plan/disarm','plan-out')">Disarm</button>
-        <button onclick="planPost('/api/plan/tick','plan-out')">Tick (executor)</button>
-        <button onclick="planPost('/api/plan/clear','plan-out')" class="danger">Clear</button>
+        <button onclick="load('/api/plan','plan-out')" title="Show the currently staged/armed plan">View plan</button>
+        <button onclick="planPost('/api/plan/sequence','plan-out')" title="DRY-RUN preview of the exact bring-up steps per segment — nothing changes">Preview bring-up</button>
+        <button onclick="planPost('/api/plan/arm','plan-out')" title="Commit the staged plan. After this the autopilot starts bringing the array up (while you hold the lease).">Arm (executor)</button>
+        <button onclick="planPost('/api/plan/disarm','plan-out')" title="Stop the autopilot acting on this plan (keeps the plan staged)">Disarm</button>
+        <button onclick="planPost('/api/plan/step','plan-out')" title="Manually advance the armed plan's bring-up by ONE step and report the current stage / blocker. The autopilot normally does this automatically.">Advance bring-up</button>
+        <button onclick="planPost('/api/plan/clear','plan-out')" class="danger" title="Delete the active plan entirely">Clear</button>
       </div>
       <pre id="plan-out">plan…</pre>
     </div>
     <div class="card">
-      <h3>Set plan (executor only)</h3>
-      <p style="color:var(--mut);font-size:12px;">Provide <code>sources</code>
-        (transit-centred) or explicit <code>segments</code>.</p>
+      <h3>Stage a plan (executor only)</h3>
+      <p class="hint">Provide <code>sources</code> (transit-centred windows) or
+        explicit <code>segments</code> (raw start/end + dec). Click an example to
+        fill it in, edit, then Install. Staging never moves anything — you still
+        Arm afterwards.</p>
+      <div class="row">
+        <button class="linkish" onclick="example('dec')" title="A single declination, starting now, open-ended ('until further notice'), spectral line OFF">Example: open-ended dec</button>
+        <button class="linkish" onclick="example('source')" title="A 30-minute window centred on a calibrator's transit">Example: transit source</button>
+        <button class="linkish" onclick="example('survey')" title="Two back-to-back declination segments">Example: two-dec survey</button>
+        <button class="linkish" onclick="example('spl')" title="A declination with spectral-line mode configured (subbands)">Example: spectral-line ON</button>
+      </div>
       <textarea id="plan-body" placeholder='{"sources":[{"label":"3C48","ra_deg":24.4,"dec_deg":33.2,"window_min":30}]}'>{"sources":[]}</textarea>
-      <div class="row" style="margin-top:8px;"><button onclick="setPlan()">Install plan</button></div>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="setPlan()" title="Stage this plan (unarmed). It will be validated against the elevation envelope.">Install plan</button>
+      </div>
       <pre id="plan-set-out"></pre>
     </div>
   </section>
@@ -167,16 +226,32 @@
   <section id="tab-autonomy" class="tab">
     <div class="card">
       <h3>Autonomy supervisor</h3>
-      <p style="color:var(--mut);font-size:12px;">Standing health/recovery/
-        injection/plan loops. From the browser this is monitor-only (the
-        mutating loops act only in the standing-executor process).</p>
+      <p class="hint">Standing health / recovery / injection / plan loops.
+        Health monitoring is read-only and always runs; the mutating loops act
+        only in whichever process holds the executor lease (the h23 standing
+        executor, or this console's autopilot when you hold the lease).</p>
       <div class="row">
-        <button onclick="load('/api/autonomy','auto-out')">Status</button>
-        <button onclick="planPost('/api/autonomy/tick','auto-out')">Force a tick</button>
+        <button onclick="load('/api/autonomy','auto-out')" title="Current supervisor status: enabled loops, intervals, last tick, active alerts">Status</button>
+        <button onclick="planPost('/api/autonomy/tick','auto-out')" title="Force one supervisor tick (monitor-only from the browser)">Force a tick</button>
       </div>
       <pre id="auto-out">autonomy status…</pre>
     </div>
   </section>
+  </main>
+
+  <!-- ===================== PERSISTENT CHAT ===================== -->
+  <aside class="chat-dock">
+    <h3>Operator assistant</h3>
+    <p class="hint" style="margin-top:0;">Ask anything, or tell it to operate the
+      array. It can <em>act</em> only while this session holds the executor
+      lease; every action still passes the policy gates.</p>
+    <div id="log"></div>
+    <form class="ask" onsubmit="return ask(event)">
+      <input id="q" placeholder="e.g. observe at dec 16.27, spl off, until further notice" autocomplete="off" />
+      <button type="submit" title="Send">Ask</button>
+    </form>
+  </aside>
+  </div>
 
 <script>
 function showTab(name) {
@@ -206,6 +281,63 @@ async function planPost(url, target) {
   el.textContent = "…";
   try { el.textContent = JSON.stringify(await postJSON(url, {}), null, 2); }
   catch (e) { el.textContent = "error: " + e; }
+  refreshStatus();
+}
+
+// -- status bar --
+function setPill(id, cls, dotColor, html) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = "pill" + (cls ? " " + cls : "");
+  const dot = el.querySelector(".dot");
+  if (dot) dot.className = "dot" + (dotColor ? " " + dotColor : "");
+  el.querySelector("b").innerHTML = html;
+}
+async function refreshStatus() {
+  try {
+    const j = await (await fetch("/api/status")).json();
+    const d = j.data || {};
+    // mode
+    const live = (d.mode === "live");
+    setPill("sb-mode", live ? "ok" : "warn", null,
+            live ? "LIVE" : "SHADOW (dry-run)");
+    // e-stop
+    const paused = d.paused === true;
+    setPill("sb-estop", paused ? "alert" : "ok", null,
+            paused ? "ENGAGED" : "clear");
+    // system state
+    const ss = d.system_state || {};
+    const state = ss.state || (ss.error ? "unreachable" : "unknown");
+    let sysCls = "warn", sysDot = "amber";
+    if (state === "observing") { sysCls = "ok"; sysDot = "green"; }
+    else if (state === "prepared" || ss.safe_to_arm) { sysCls = "ok"; sysDot = "green"; }
+    else if (state === "ready") { sysCls = ""; sysDot = "blue"; }
+    else if (state === "preparing") { sysCls = "warn"; sysDot = "amber"; }
+    else if (state === "offline" || state === "unreachable" || state === "unknown") { sysCls = "alert"; sysDot = "red"; }
+    const sta = (ss.safe_to_arm !== undefined) ? ` (safe_to_arm=${ss.safe_to_arm})` : "";
+    setPill("sb-system", sysCls, sysDot, `${state}${sta}`);
+    // antennas
+    const pt = d.pointing || {};
+    const nns = pt.n_not_settled;
+    if (pt.error) setPill("sb-ant", "alert", "red", "unreachable");
+    else if (nns == null) setPill("sb-ant", "", null, "—");
+    else setPill("sb-ant", nns > 0 ? "warn" : "ok", nns > 0 ? "amber" : "green",
+                 nns > 0 ? `${nns} moving` : "settled");
+    // dec
+    const dec = pt.target_dec_deg;
+    setPill("sb-dec", "", null, (dec == null ? "—" : (+dec).toFixed(2) + "°"));
+    // plan
+    const pl = d.plan;
+    if (!pl) setPill("sb-plan", "", null, "none");
+    else if (pl.armed) setPill("sb-plan", "ok", "green",
+            `armed${pl.active_dec != null ? " · dec " + (+pl.active_dec).toFixed(2) + "°" : ""}`);
+    else setPill("sb-plan", "warn", "amber", "staged (not armed)");
+    // lease / control
+    const ls = d.lease || {};
+    if (ls.you_hold_it) setPill("sb-lease", "ok", "green", "you hold it");
+    else if (ls.holder) setPill("sb-lease", "", "blue", `held by ${ls.holder.actor}`);
+    else setPill("sb-lease", "warn", "amber", "free");
+  } catch (e) { /* leave pills as-is */ }
 }
 
 // -- lease --
@@ -215,11 +347,9 @@ async function refreshLease() {
   try {
     const j = await (await fetch("/api/lease")).json();
     const d = j.data || j;
-    el.textContent = JSON.stringify(d, null, 2);
+    if (el) el.textContent = JSON.stringify(d, null, 2);
     const badge = document.getElementById("mode-badge");
     badge.textContent = (d && d.you_hold_it) ? "EXECUTOR · control enabled" : "monitoring";
-    // If we held the lease and now don't, it lapsed (e.g. laptop slept) or
-    // someone took over — make that obvious rather than silently failing.
     if (_prevHold === true && d && !d.you_hold_it) {
       const who = (d.holder && d.holder.actor) ? `now held by ${d.holder.actor}`
                                                : "control is now free";
@@ -229,7 +359,7 @@ async function refreshLease() {
       clearBanner();
     }
     _prevHold = !!(d && d.you_hold_it);
-  } catch (e) { el.textContent = "error: " + e; }
+  } catch (e) { if (el) el.textContent = "error: " + e; }
 }
 function showBanner(msg) {
   let b = document.getElementById("wake-banner");
@@ -251,7 +381,7 @@ async function _leasePost(path) {
   const el = document.getElementById("lease");
   try { el.textContent = JSON.stringify(await postJSON(path, {}), null, 2); }
   catch (e) { el.textContent = "error: " + e; }
-  refreshLease();
+  refreshLease(); refreshStatus();
 }
 function acquireLease() { _leasePost("/api/lease/acquire"); }
 function releaseLease() { _leasePost("/api/lease/release"); }
@@ -262,10 +392,12 @@ async function pause() {
   const reason = prompt("Reason for engaging the e-stop?", "manual stop") || "";
   document.getElementById("authority").textContent =
     JSON.stringify(await postJSON("/api/pause", {reason}), null, 2);
+  refreshStatus();
 }
 async function resume() {
   document.getElementById("authority").textContent =
     JSON.stringify(await postJSON("/api/resume", {}), null, 2);
+  refreshStatus();
 }
 
 // -- propose action --
@@ -303,6 +435,7 @@ async function proposeAction() {
     const j = await postJSON("/api/control", _ctlBody());
     out.textContent = JSON.stringify(j.decision || j, null, 2);
   } catch (e) { out.textContent = "error: " + e; }
+  refreshStatus();
 }
 async function requestApproval() {
   const out = document.getElementById("ctl-out");
@@ -327,7 +460,7 @@ async function refreshApprovals() {
         <td>${JSON.stringify(a.params)}</td><td>${a.requested_by}</td>
         <td>${(a.granted_by||[]).length}/${a.n_required}</td>
         <td>${Math.round(a.expires_in_s)}s</td>
-        <td><button onclick="grant('${a.id}')">Grant</button></td>`;
+        <td><button onclick="grant('${a.id}')" title="Grant this approval under your name">Grant</button></td>`;
       tb.appendChild(tr);
     });
   } catch (e) { tb.innerHTML = `<tr><td colspan="7">error: ${e}</td></tr>`; }
@@ -338,6 +471,31 @@ async function grant(id) {
 }
 
 // -- plan --
+function _openEnded(decDeg) {
+  const now = Math.floor(Date.now() / 1000);
+  const century = 100 * 365 * 86400;
+  return {segments: [{t_start: now, t_end: now + century,
+                      dec_deg: decDeg, label: `dec ${decDeg}`}]};
+}
+function example(kind) {
+  let body;
+  if (kind === "dec") {
+    body = _openEnded(16.27);
+  } else if (kind === "source") {
+    body = {sources: [{label: "3C48", ra_deg: 24.42, dec_deg: 33.16, window_min: 30}]};
+  } else if (kind === "survey") {
+    const now = Math.floor(Date.now() / 1000), h = 3600;
+    body = {segments: [
+      {t_start: now,       t_end: now + h,     dec_deg: 16.27, label: "dec 16.27"},
+      {t_start: now + h,   t_end: now + 2 * h, dec_deg: 33.16, label: "dec 33.16"}
+    ]};
+  } else if (kind === "spl") {
+    const p = _openEnded(16.27);
+    p.segments[0].setup = {spectral_line: {subbands: [[1400.0, 1420.0]], reason: "HI line"}};
+    body = p;
+  }
+  document.getElementById("plan-body").value = JSON.stringify(body, null, 2);
+}
 async function setPlan() {
   const out = document.getElementById("plan-set-out");
   let body;
@@ -345,6 +503,7 @@ async function setPlan() {
   catch (e) { out.textContent = "error: plan body is not valid JSON"; return; }
   try { out.textContent = JSON.stringify(await postJSON("/api/plan", body), null, 2); }
   catch (e) { out.textContent = "error: " + e; }
+  refreshStatus();
 }
 
 // -- chat --
@@ -372,25 +531,27 @@ async function ask(ev) {
     if (j.ok) add("bot", j.text, j.tool_calls);
     else add("bot", "error: " + (j.error || "chat failed"));
   } catch (e) { placeholder.remove(); add("bot", "error: " + e); }
+  refreshStatus();
   return false;
 }
-// Keep the lease view live, and react quickly when the laptop wakes / the
-// network returns so a lapsed lease (or a takeover) shows up immediately.
+
+// Keep the lease + status live, and react quickly on wake / reconnect.
 let _lastSeen = Date.now();
+function refreshAll() { refreshLease(); refreshStatus(); }
 async function onWake() {
   const gap = Date.now() - _lastSeen;
   _lastSeen = Date.now();
-  if (gap > 20000) {                       // likely slept/suspended
+  if (gap > 20000) {
     showBanner("Reconnecting after sleep — re-checking telescope + control…");
     setTimeout(clearBanner, 4000);
   }
-  refreshLease();
+  refreshAll();
 }
-setInterval(() => { _lastSeen = Date.now(); refreshLease(); }, 10000);
+setInterval(() => { _lastSeen = Date.now(); refreshAll(); }, 7000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) onWake(); });
 window.addEventListener("focus", onWake);
 window.addEventListener("online", onWake);
-refreshLease();
+refreshAll();
 </script>
 </body>
 </html>
