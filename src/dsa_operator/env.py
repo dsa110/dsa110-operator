@@ -10,7 +10,8 @@ This loader looks, in order:
      or `export`),
   2. ``$DSA_OPERATOR_SECRETS`` if set,
   3. ``~/.config/dsa110-operator/secrets.env``,
-  4. ``.env`` in the repo root.
+  4. ``.env`` in the repo root,
+  5. ``scripts/.env`` (next to ``laptop.sh``).
 
 Files are simple ``KEY=VALUE`` lines (``#`` comments allowed). Existing
 environment values are never overwritten. **No secret value is ever
@@ -39,7 +40,11 @@ def _candidate_files() -> Iterable[Path]:
     if explicit:
         yield Path(explicit).expanduser()
     yield Path.home() / ".config" / "dsa110-operator" / "secrets.env"
-    yield Path(__file__).resolve().parents[2] / ".env"
+    repo_root = Path(__file__).resolve().parents[2]
+    yield repo_root / ".env"
+    # Also accept a .env dropped next to the launcher (scripts/laptop.sh) —
+    # a natural place to put it when you run the console from scripts/.
+    yield repo_root / "scripts" / ".env"
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -62,6 +67,9 @@ def load_secrets() -> list[str]:
     Returns the list of key NAMES newly set (never values), for logging.
     """
     loaded: list[str] = []
+    # Read every candidate file. Earlier files take precedence per key (we
+    # never overwrite a value already in the environment), so e.g. the cookie
+    # secret can live in one file and ANTHROPIC_API_KEY in another.
     for path in _candidate_files():
         try:
             if not path.is_file():
@@ -73,14 +81,15 @@ def load_secrets() -> list[str]:
         except OSError as exc:
             LOG.warning("could not read secrets file %s: %s", path, exc)
             continue
+        from_here: list[str] = []
         for key, val in kv.items():
             if key not in os.environ:          # never overwrite the real env
                 os.environ[key] = val
                 loaded.append(key)
-        if loaded:
-            LOG.info("loaded %d secret(s) from %s: %s", len(loaded), path,
-                     ", ".join(sorted(loaded)))
-        break                                   # first file wins
+                from_here.append(key)
+        if from_here:
+            LOG.info("loaded %d secret(s) from %s: %s", len(from_here), path,
+                     ", ".join(sorted(from_here)))
     return loaded
 
 

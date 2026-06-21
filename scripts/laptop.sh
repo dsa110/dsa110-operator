@@ -21,7 +21,8 @@
 #   PYTHON                  python interpreter          (default: python)
 #
 # Secrets (ANTHROPIC_API_KEY for the real agent, optional Slack webhook) are
-# read automatically from ./.env or ~/.config/dsa110-operator/secrets.env.
+# read automatically from ./.env, ./scripts/.env, or
+# ~/.config/dsa110-operator/secrets.env.
 set -euo pipefail
 
 SSH_HOST="${DSA_OPERATOR_SSH_HOST:-h23}"
@@ -74,10 +75,20 @@ echo "==> opening self-healing SSH tunnel to $SSH_HOST ..."
 "$PY" -m dsa_operator.transport.ssh_tunnel --ssh-host "$SSH_HOST" \
       --etcd-port "$ETCD_PORT" &
 TUN_PID=$!
+port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/${ETCD_PORT}") 2>/dev/null; }
 cleanup() {
   echo; echo "==> stopping tunnel"
   kill "$TUN_PID" 2>/dev/null || true
   wait "$TUN_PID" 2>/dev/null || true   # reap python + its ssh child (no orphan)
+  # Belt and suspenders: if the ssh child was somehow orphaned and still holds
+  # the forwarded etcd port, kill exactly that forward so the next run isn't
+  # blocked by "127.0.0.1:${ETCD_PORT} is already in use". The match is the
+  # local-forward spec, so it only ever hits this tunnel's ssh.
+  for _ in 1 2 3; do
+    port_in_use || break
+    pkill -f -- "-L 127.0.0.1:${ETCD_PORT}:" 2>/dev/null || true
+    sleep 0.3
+  done
   stty sane 2>/dev/null || true         # restore the terminal after Ctrl-C
 }
 trap cleanup EXIT INT TERM

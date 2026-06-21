@@ -29,6 +29,7 @@ manages the subprocess lifecycle.
 from __future__ import annotations
 
 import logging
+import signal
 import socket
 import subprocess
 import threading
@@ -277,26 +278,41 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         print(" ".join(build_ssh_command(args.ssh_host, fwds)))
         return 0
 
+    # laptop.sh runs us in the background and stops us with `kill` (SIGTERM) on
+    # Ctrl-C. Python's default SIGTERM action exits *without* running finally
+    # blocks, which would orphan the ssh child and leak the forwarded port
+    # (e.g. 12379). Turn SIGTERM into KeyboardInterrupt so the cleanup below
+    # always runs and the ssh child is reaped.
+    def _on_term(signum, _frame):                          # pragma: no cover
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
+
     def _serve_once() -> bool:
         """Bring the tunnel up and block until it drops. Returns True if it was
         ever ready (so the supervisor can reset its backoff)."""
         tun = SshTunnel(ssh_host=args.ssh_host, forwards=fwds)
         tun.start()
-        if not tun.wait_ready():
-            tun.stop()
-            return False
-        print(f"tunnel up: etcd -> 127.0.0.1:{args.etcd_port}, "
-              f"dashboard -> 127.0.0.1:{args.dashboard_port}.")
+        # Always stop the tunnel (terminating the ssh child, which holds the
+        # forwarded ports) on every exit path — including KeyboardInterrupt
+        # from Ctrl-C or a SIGTERM from laptop.sh.
         try:
+            if not tun.wait_ready():
+                return False
+            print(f"tunnel up: etcd -> 127.0.0.1:{args.etcd_port}, "
+                  f"dashboard -> 127.0.0.1:{args.dashboard_port}.")
             while tun.is_alive():
                 time.sleep(1.0)
+            LOG.warning("ssh tunnel dropped")
+            return True
         finally:
             tun.stop()
-        LOG.warning("ssh tunnel dropped")
-        return True
 
     if args.no_retry:
-        return 0 if _serve_once() else 1
+        try:
+            return 0 if _serve_once() else 1
+        except KeyboardInterrupt:
+            print("\nclosing tunnel.")
+            return 0
 
     # Supervised reconnect loop: ServerAliveInterval makes ssh exit a few
     # seconds after the laptop suspends or the link dies; we just bring it back
