@@ -131,6 +131,10 @@ class AutonomySupervisor:
         self._now = now
         self._last: dict[str, float] = {}       # loop -> last-run ts
         self._last_alert_codes: set[str] = set()
+        # Edge-trigger the health audit row: remember the last (level, codes)
+        # we wrote so a persistent condition (e.g. stale sky/SEFD while the
+        # system is idle) isn't re-logged every tick.
+        self._last_health_state: Optional[tuple[str, frozenset[str]]] = None
         self._last_tick: Optional[SupervisorTick] = None
 
     # -- gating ---------------------------------------------------------------
@@ -228,13 +232,22 @@ class AutonomySupervisor:
 
     # -- health recording / alerting -----------------------------------------
     def _record_health(self, report: HealthReport) -> None:
-        try:
-            self._audit.record(AuditRecord(
-                action="health_monitor", kind="system", actor=self.actor,
-                ok=(report.level != LEVEL_ALERT), note=f"level={report.level}",
-                result=report.to_json()))
-        except Exception:                                      # noqa: BLE001
-            pass
+        # Edge-triggered audit: only write a health_monitor row when the health
+        # *state* changes — the overall level plus the set of non-OK finding
+        # codes. Otherwise an idle system (persistently stale sky/SEFD ->
+        # level=warn) would log an identical row every tick forever. State
+        # transitions (degrade, clear, a new finding) are still recorded, so
+        # the audit trail keeps the edges without the noise.
+        state = (report.level, frozenset(report.codes))
+        if state != self._last_health_state:
+            self._last_health_state = state
+            try:
+                self._audit.record(AuditRecord(
+                    action="health_monitor", kind="system", actor=self.actor,
+                    ok=(report.level != LEVEL_ALERT), note=f"level={report.level}",
+                    result=report.to_json()))
+            except Exception:                                  # noqa: BLE001
+                pass
         # Alert on newly-appearing alert codes only (edge-triggered) so we
         # don't spam Slack every tick while a condition persists.
         alert_codes = {f.code for f in report.alerts}

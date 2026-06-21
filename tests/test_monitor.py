@@ -245,6 +245,43 @@ def test_supervisor_ticks_plan(tmp_path):
     assert tick.plan is not None and tick.plan["moved"] is True
 
 
+class _CapturingAudit:
+    """Minimal audit sink that just records AuditRecords in a list."""
+
+    def __init__(self):
+        self.records = []
+
+    def record(self, rec):
+        self.records.append(rec)
+
+    def health_rows(self):
+        return [r for r in self.records if r.action == "health_monitor"]
+
+
+def test_supervisor_health_audit_is_edge_triggered(tmp_path):
+    # A persistent warn (idle system: stale sky) must be logged once, not on
+    # every tick — otherwise the audit trail fills with identical rows.
+    eng = _engine(tmp_path)
+    cfg = AutonomyConfig(enabled=True, health_s=1.0)
+    th = HealthThresholds(sky_frame_max_age_s=300.0)
+    audit = _CapturingAudit()
+    sup = AutonomySupervisor(eng, FakeTools(sky_age=999.0), audit, cfg,
+                             thresholds=th, session_id="supervisor")
+    sup.tick(now=1000.0)
+    sup.tick(now=1001.0)
+    sup.tick(now=1002.0)
+    rows = audit.health_rows()
+    assert len(rows) == 1                       # logged once, not three times
+    assert rows[0].note == "level=warn"
+
+    # When the condition clears (sky fresh again) the transition IS recorded.
+    sup._tools = FakeTools(sky_age=10.0)
+    sup.tick(now=1003.0)
+    rows = audit.health_rows()
+    assert len(rows) == 2
+    assert rows[1].note == "level=ok"
+
+
 def test_supervisor_respects_health_cadence(tmp_path):
     eng = _engine(tmp_path)
     eng.lease.acquire("agent", "supervisor")
