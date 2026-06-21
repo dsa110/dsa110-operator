@@ -59,5 +59,9 @@ def test_system_prompt_is_read_only():
 
 
 def test_build_default_agent_without_key(monkeypatch):
+    # Isolate from any real secrets file on the dev machine (e.g. scripts/.env):
+    # build_default_agent() calls load_secrets(), which would otherwise repopulate
+    # ANTHROPIC_API_KEY from disk. Neutralize it so we exercise the no-key branch.
+    monkeypatch.setattr("dsa_operator.env.load_secrets", lambda: [])
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert isinstance(build_default_agent(), StubAgent)

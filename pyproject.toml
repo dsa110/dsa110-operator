@@ -25,10 +25,11 @@ web = [
     "jinja2>=3.1",
     "itsdangerous>=2.1",
 ]
-# The Claude brain (laptop, the operator's own Anthropic account). The web
-# console falls back to a deterministic stub agent when this/the key is
-# absent, so monitoring + Q&A still work in dev/CI.
-agent = ["claude-agent-sdk>=0.1"]
+# The Claude brain (laptop, the operator's own Anthropic account). Uses the
+# `anthropic` Messages API client directly (see dsa_operator/agent/claude.py).
+# The web console falls back to a deterministic stub agent when this/the key
+# is absent, so monitoring + Q&A still work in dev/CI.
+agent = ["anthropic>=0.39"]
 dev = ["pytest>=7.0"]
 
 [tool.setuptools.packages.find]

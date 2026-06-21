@@ -1,4 +1,4 @@
-"""The real Claude brain (Anthropic API via the Claude Agent SDK).
+"""The real Claude brain (Anthropic Messages API via the `anthropic` client).
 
 Imports the SDK lazily so the package works without it. Registers ONLY the
 read-only tools; the model is given the read-only system prompt and runs a
@@ -6,10 +6,10 @@ short tool-use loop. Each tool result is the compact summary the tool
 already produces (no raw telemetry), and every call is audited by the
 ReadOnlyTools layer itself.
 
-Verified live only on a machine with ``ANTHROPIC_API_KEY`` set and
-``claude-agent-sdk`` installed (the operator's laptop). On h23/CI without
-those, :func:`dsa_operator.agent.build_default_agent` selects the stub
-instead.
+Verified live only on a machine with ``ANTHROPIC_API_KEY`` set and the
+``anthropic`` package installed (``pip install .[agent]`` on the operator's
+laptop). On h23/CI without those,
+:func:`dsa_operator.agent.build_default_agent` selects the stub instead.
 """
 from __future__ import annotations
 
@@ -32,13 +32,13 @@ MAX_TOOL_ITERS = 6
 class ClaudeAgent:
     """Anthropic tool-use loop over the read-only tools.
 
-    Uses the ``anthropic`` Messages API (shipped as a dependency of the
-    Claude Agent SDK). Kept deliberately small and synchronous to match
-    the Flask request model.
+    Uses the ``anthropic`` Messages API client (the ``agent`` extra:
+    ``pip install .[agent]``). Kept deliberately small and synchronous to
+    match the Flask request model.
     """
 
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
-        import anthropic  # lazy; provided by claude-agent-sdk
+        import anthropic  # lazy; from the `anthropic` extra (pip install .[agent])
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")

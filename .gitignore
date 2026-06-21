@@ -14,4 +14,6 @@ audit_log/
 .secrets/
 *.env
 .env
+.env~
+*~
 config/local.yaml
