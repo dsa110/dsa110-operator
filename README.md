@@ -35,7 +35,9 @@ your machine ──ssh──> h23 ──┬── etcd (etcdv3service.pro.pvt:23
 - **Gated and reversible-first.** Risky or irreversible actions require a
   typed human approval; fleet code updates and policy edits *always* need a
   human (policy edits are two-person). The default mode is **shadow** (dry
-  run) — actions are graduated to live one at a time after validation.
+  run) — actions are graduated to live one at a time after validation. Until
+  you go live, nothing is sent (see
+  [USAGE → Going live](docs/USAGE.md#going-live-flipping-the-policy)).
 - **Human authority.** From the dsa110-rt dashboard, humans can lock agents
   out, pin who's in charge, and cap observation time — overrides the agent
   cannot countermand. Plus a console e-stop.

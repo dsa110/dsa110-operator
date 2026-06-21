@@ -43,23 +43,27 @@ The single lease-holding session can run the actions below. All of these are
 OK (still audited and Slack-notified). The two exceptions that always need a
 human are in §3.
 
-| Action | Gate | Reversible | What it does |
+In the **Control** tab you pick the action and supply the **parameters** as a
+JSON object; in chat the assistant fills them in for you. Parameters in **bold**
+are required; the rest are optional (defaults noted).
+
+| Action | Parameters (JSON) | Reversible | What it does |
 | --- | --- | --- | --- |
-| `fire_injection` | autonomous | yes | Synthetic FRB into `corr_fast`; health-check + calibration |
-| `inject_calibrate` | autonomous | yes | Injection-based SNR calibration |
-| `set_dumps_enabled` | autonomous | yes | C2 voltage-dump enable/disable kill-switch |
-| `dump_now` | autonomous | yes | Trigger an immediate dump |
-| `build_fstable` | autonomous | yes | Build a fringe-stopping table (cache file; no observing impact) |
-| `deploy_fstable` | autonomous | yes | Push fringe-stop tables to correlator nodes |
-| `point_array` | autonomous | yes | Slew dishes in elevation (dec → el) |
-| `start_fleet` | autonomous | yes | Start the pipeline fleet |
-| `stop_fleet` | autonomous | yes | Stop the pipeline fleet |
-| `bounce_search` | autonomous | yes | Restart search on a node |
-| `restart_all` | autonomous | yes | Cold fleet restart (async) so a new dec/fstable is picked up |
-| `utc_start` | autonomous | yes | Arm recording (ARM_SEQ) |
-| `utc_stop` | autonomous | yes | Stop recording |
-| `set_spectral_line` | autonomous | no | Spectral-line mode (takes effect next fleet start) |
-| `delete_snr_cal` | autonomous | no | Delete an SNR calibration file |
+| `point_array` | **`dec_deg`** (number); `refants` (list of ant ids) | yes | Slew dishes in elevation for a transit pointing (`el = 90 − (lat − dec)`). Refused if dec → el falls outside the `[el_min, el_max]` envelope. |
+| `start_fleet` | `dec_deg` (number) | yes | Start the pipeline fleet (optionally for a given observing dec). |
+| `stop_fleet` | — | yes | Stop the pipeline fleet. |
+| `restart_all` | `dec_deg` (number) | yes | Cold fleet restart (async) so a new dec/fstable is picked up. |
+| `bounce_search` | `cn_ids` (list of node ids) | yes | Restart the search half (all search nodes, or just `cn_ids`). |
+| `build_fstable` | **`dec_deg`** (number); `force` (bool) | yes | Build a fringe-stopping table for a dec (cache file; no observing impact). |
+| `deploy_fstable` | **`filename`** (bare `.npz` basename, no `/`) | yes | Push a built fringe-stop table to the correlator nodes. |
+| `utc_start` | `margin` (int ms, default `30000`) | yes | Arm recording (computes ARM_SEQ from capture). The observing sequencer uses `margin=60000`. |
+| `utc_stop` | — | yes | Stop / disarm recording. |
+| `set_spectral_line` | **`subbands`** (list, or `[]`/omit for continuum); `reason` (string) | no | Set spectral-line mode; takes effect at the **next** fleet start. |
+| `set_dumps_enabled` | **`enabled`** (bool); `reason` (string) | yes | C2 voltage-dump enable/disable kill-switch. |
+| `dump_now` | — | yes | Trigger an immediate voltage dump. |
+| `fire_injection` | `target_snr`, `dm_pc_cm3`, `l_rad`, `m_rad`, `width_samples`, `fluence_jy_ms`, `profile`, `chgroups`, `margin_blocks` (all optional) | yes | Synthetic FRB into `corr_fast`; health-check + calibration. |
+| `inject_calibrate` | `dm_pc_cm3`, `l_rad`, `m_rad`, `width_samples`, `fluence_jy_ms`, `profile`, `chgroups`, `use_ladder`, `fluence_ladder`, `health_check` (all optional) | yes | Injection-based SNR (K-factor) calibration. |
+| `delete_snr_cal` | — | no | Delete the stored SNR calibration. |
 
 > **Per-action approvals are not required for these.** The agent's safeguard
 > for multi-step observing is **plan-level confirmation**: before it executes
@@ -68,14 +72,38 @@ human are in §3.
 > go-ahead — see [USAGE](USAGE.md#observing-sequences) and §5. It does not
 > ask again before each individual command.
 
+### 2.1 Observing-plan tools (what the assistant drives in chat)
+
+You rarely call the raw actions above for observing — you describe what you
+want and the assistant composes them into a plan. These are the chat tools it
+uses (all bound to your identity + session and gated exactly like the actions
+above):
+
+| Tool | Parameters | What it does |
+| --- | --- | --- |
+| `observe_at_dec` | **`dec_deg`**; `start_unix`, `end_unix` (omit for open-ended), `label`, `note` | Stage a single-segment plan at one dec (UNARMED). |
+| `set_observing_plan` | `sources` (`[{label, ra_deg, dec_deg, window_min}]`) **or** `segments` (`[{t_start, t_end, dec_deg, label, setup}]`); `note` | Stage a full plan (UNARMED). Validated against the elevation envelope. |
+| `compute_transits` | `sources` (`[{label, ra_deg, dec_deg}]`) | Next transit time, dec→el, observability — used to lay out a schedule. |
+| `preview_observing_plan` | — | Dry-run of the exact bring-up steps per segment (no change). |
+| `arm_observing_plan` | — | Commit the staged plan. After this the bring-up runs automatically (see §7). |
+| `disarm_observing_plan` / `clear_plan` | — | Stop acting on / delete the plan. |
+| `observing_status` | — | Is a plan armed? which segment is active now? |
+| `run_observing_step` | — | Advance the armed bring-up one step and report the current stage / blocker. |
+| `lease_status` / `list_control_actions` | — | Who holds control / the available actions and their gates. |
+| `propose_action` / `request_approval` | `action`, `params` | Run any §2 action through the gate engine / request a human approval. |
+
+A "spectral line OFF / continuum" request just omits `setup`; to configure
+spectral line at a dec, put it in that segment's `setup`, e.g.
+`setup={"spectral_line": {"subbands": [3, 4]}}`.
+
 ## 3. Always require a human (never autonomous)
 
 These stay `approval` in **both** columns — they cannot be graduated:
 
-| Action | Reversible | Why |
-| --- | --- | --- |
-| `update_fleet_code` | no | `git pull`/reset across the fleet. **Always** a human. |
-| `set_policy` | no | Edits this policy. **Two-person**: needs a second authorized approver. |
+| Action | Parameters | Reversible | Why |
+| --- | --- | --- | --- |
+| `update_fleet_code` | `branch`, `hosts` | no | `git pull`/reset across the fleet. **Always** a human. |
+| `set_policy` | (edited by hand) | no | Edits this policy. **Two-person**, and performed by hand — the live executor cannot do it (see §8). |
 
 ## 4. What it can never do
 
@@ -141,3 +169,38 @@ laptop without the lease the supervisor is effectively a monitor. Health
 thresholds (fleet counts, RFI flag-fraction warn/alert, SEFD ceiling, sky/SEFD
 staleness) live under `autonomy.thresholds` in `config/policy.yaml`. See
 [USAGE](USAGE.md#autonomy).
+
+**The console autopilot.** Arming a plan only records intent — *something* has
+to step the bring-up (point → fstable → modes → start/restart → warm →
+`utc_start`). The standing supervisor does this when it holds the lease. The
+web console also has its own autopilot: while **your** console holds the
+executor lease and a plan is armed, it advances the bring-up on the plan
+cadence, acting as the lease holder. It stays idle when another process (e.g.
+the h23 supervisor) holds the lease, so only the single lease holder ever
+drives. Every step still runs the full gauntlet — including shadow/live — so
+in `shadow` mode the autopilot walks the sequence as dry-runs and **nothing is
+sent**. (This is why "arm the plan" does nothing physical until you go live;
+see §8.)
+
+## 8. Changing what's allowed: shadow → live, and promotion
+
+Two independent switches decide whether a control action *actually executes*,
+and **both** must be set (this is by design — see the gauntlet in §5):
+
+1. **Global mode** — `mode:` in `config/policy.yaml`. `shadow` (the shipped
+   default) renders the exact writes/calls each action would make and logs
+   them **without sending**; `live` lets execution through.
+2. **Per-action promotion** — the `promote:` list in `config/local.yaml`
+   (git-ignored, optional). An action runs live only if it is promoted. With
+   no file / empty list, **every** action stays at its conservative
+   *commissioning* gate and never executes for real, even in `live` mode.
+
+So `live` + not-promoted = still a dry-run; `shadow` + promoted = still a
+dry-run. You need `mode: live` **and** the action in `promote:`.
+
+`update_fleet_code` and `set_policy` can **never** be promoted — they always
+need a human, and `set_policy` (editing this file) is two-person and is done by
+hand, since the live executor has no step type that edits the policy.
+
+The exact, step-by-step procedure (with file snippets and how to verify and
+revert) is in [USAGE → Going live](USAGE.md#going-live-flipping-the-policy).

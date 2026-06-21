@@ -9,14 +9,27 @@ For the precise list of what the agent may and may not do, see
 
 ## The console at a glance
 
-The window has four tabs. A badge in the header shows whether you are just
-**monitoring** or hold the **executor** role.
+Across the **top** is a live **status bar** (auto-refreshing) of the things you
+most need at a glance:
+
+| Pill | Shows |
+| --- | --- |
+| **mode** | `SHADOW (dry-run)` or `LIVE` — whether control actions actually execute (see [Going live](#going-live-flipping-the-policy)). |
+| **e-stop** | `clear` or `ENGAGED` (all control halted). |
+| **system** | The dashboard's `system_state` (offline / preparing / prepared / ready / observing) and `safe_to_arm`. |
+| **antennas** | `settled` or `N moving` (dishes not yet on target). |
+| **dec** | The commanded array declination. |
+| **plan** | `none`, `staged (not armed)`, or `armed · dec X`. |
+| **control** | Whether **you** hold the executor lease, someone else does, or it's free. |
+
+The **assistant chat is always available** in a dock on the right-hand side,
+on every tab. Below the status bar are four tabs:
 
 | Tab | What it's for |
 | --- | --- |
-| **Monitor** | Live state (fleet, pointing, sky, RFI, injections, candidates, audit) and the assistant chat. |
+| **Monitor** | Live state (fleet, pointing, sky, RFI, injections, candidates, audit). |
 | **Control** | The executor lease, human-authority/e-stop, proposing control actions, and granting pending approvals. |
-| **Plan** | View / set / preview / tick the observing plan. |
+| **Plan** | View / stage / preview / arm / advance the observing plan, with example plans to copy. |
 | **Autonomy** | The standing supervisor's status and a manual tick. |
 
 ## Monitoring and asking questions (anyone)
@@ -95,49 +108,118 @@ Pending requests appear in the **Control** tab with a *Grant* button; grants
 are recorded under your operator name and expire after 5 minutes. `set_policy`
 needs **two** different approvers.
 
-### Shadow vs live
+## Going live: flipping the policy
 
-By default the system is in **shadow** mode: every control action renders the
-exact writes/calls it *would* make and logs them, but **nothing is sent**.
-This is the safe way to exercise the whole surface. Real execution requires
-both `mode: live` in `config/policy.yaml` and that the specific action has
-been graduated (below).
+> **Nothing physically happens until you do this.** Out of the box the system
+> is in **shadow** mode, so every control action — including a whole armed
+> observing plan — is a **dry run**: it renders the exact etcd writes /
+> dashboard POSTs it *would* make and logs them, but **sends nothing**. The
+> `mode` pill in the status bar reads `SHADOW (dry-run)`, and the assistant
+> says so. This is the safe way to exercise the entire surface first.
 
-### Graduating actions to live
+Real execution needs **two** switches, and **both** must be set (by design):
 
-Promote actions one at a time, after you've watched them behave correctly in
-shadow:
+1. **Global mode** lives in **`config/policy.yaml`**:
 
-1. Copy `config/local.yaml.example` to `config/local.yaml`.
-2. Add the validated action under `promote:` (the file documents a sensible
-   staged ladder — reversible/low-risk first, fleet-level last).
-3. When you're ready for real execution, set `mode: live` in
-   `config/policy.yaml`.
+   ```yaml
+   mode: shadow        # change to:  live
+   ```
 
-Promotion moves an action from its conservative *commissioning* gate to its
-*steady-state* gate and is itself audited. `update_fleet_code` and
-`set_policy` can never be graduated — they always need a human.
+2. **Per-action promotion** lives in **`config/local.yaml`** (git-ignored,
+   optional). An action executes for real only if it is listed under
+   `promote:`. With no file or an empty list, **every** action stays at its
+   conservative *commissioning* gate and is a dry-run even in `live` mode.
+
+So: `live` + not-promoted = still a dry-run. `shadow` + promoted = still a
+dry-run. You need `mode: live` **and** the action promoted.
+
+### Step by step
+
+1. **Exercise it in shadow first.** Run the action (or arm the plan) and read
+   the rendered steps in the output / chat. Confirm the writes/POSTs are what
+   you expect. The `mode` pill should say `SHADOW`.
+
+2. **Create your local promotion file** (once):
+
+   ```bash
+   cp config/local.yaml.example config/local.yaml
+   ```
+
+3. **Promote the validated actions**, one or a few at a time. Edit
+   `config/local.yaml` so `promote:` lists them — the example file documents a
+   sensible ladder (reversible/low-risk first, fleet-level last). For the
+   observing bring-up you need these promoted:
+
+   ```yaml
+   promote:
+     - point_array
+     - build_fstable
+     - deploy_fstable
+     - set_spectral_line   # only if you use spectral-line mode
+     - start_fleet
+     - restart_all
+     - utc_start
+     - utc_stop
+   ```
+
+4. **Flip the global mode** when you're ready for real execution — edit
+   `config/policy.yaml`:
+
+   ```yaml
+   mode: live
+   ```
+
+5. **Restart the console** (`scripts/laptop.sh`) so it re-reads the policy.
+
+6. **Verify.** The status-bar `mode` pill should now read `LIVE`. The
+   `/api/policy` endpoint (and the **Control** tab's action gates) reflect the
+   active mode and promotions. Watch the audit log + Slack as the first real
+   actions execute.
+
+### Reverting
+
+To go back to safe dry-runs, set `mode: shadow` in `config/policy.yaml` (or
+remove an action from `promote:` to demote just that one) and restart the
+console. You can also **engage the e-stop** (Control tab → *Pause*) for an
+instant, no-edit halt of all control.
+
+### What you can never promote
+
+`update_fleet_code` and `set_policy` stay `approval` forever — they always need
+a human. Editing `config/policy.yaml` itself is the `set_policy` action: it is
+**two-person** and done **by hand** (the live executor has no step type that
+edits the policy), so changing `mode`/thresholds is always a deliberate manual
+edit, never something the agent can do for you.
 
 ## Observing plans
 
 DSA-110 is a meridian-transit instrument, so a plan is a timed schedule of
 **declinations** (a source is observable around its transit, when LST = RA).
-In the **Plan** tab (executor only to change):
+In the **Plan** tab (executor only to change). The tab includes a short
+explainer and **example plans** (open-ended dec, transit source, two-dec
+survey, spectral-line) you can click to fill the form, edit, and install.
 
-- **Set plan** — provide transit-centred `sources`
+- **Install plan** — provide transit-centred `sources`
   (`{label, ra_deg, dec_deg, window_min}`) or explicit `segments`
-  (`{t_start, t_end, dec_deg, label}`). Validated against the pointing
-  envelope.
-- **Preview** — the per-segment bring-up the sequencer *would* run (no move).
+  (`{t_start, t_end, dec_deg, label, setup}`). Staged **unarmed** and validated
+  against the pointing envelope; nothing moves yet.
+- **Preview bring-up** — a dry-run listing of the exact steps the sequencer
+  would run for each segment (no change).
 - **Arm / Disarm** — a staged plan does nothing until armed; arming is the
-  commit after you've confirmed the schedule. The autonomy supervisor (or
-  **Tick**) then drives the bring-up for the active segment through the gate
-  engine.
+  commit after you've confirmed the schedule. Once armed, the **console
+  autopilot** advances the bring-up automatically (every ~30 s) for as long as
+  your console holds the executor lease — point → fringe-stop table → modes →
+  start/restart → wait for warm → `utc_start`.
+- **Advance bring-up** — manually step the armed plan's bring-up by **one**
+  stage and see the current stage / any blocker. The autopilot normally does
+  this for you; use it to nudge or inspect. (This replaces the old "Tick",
+  which only nudged *pointing*.)
 - **Clear** — remove the active plan.
 
 Every plan-driven action still flows the full gauntlet (lease, e-stop,
 dashboard lockout, gate, shadow/live) — arming changes *when* it runs, never
-*what is allowed*.
+*what is allowed*. In `shadow` mode the autopilot walks the sequence as
+dry-runs and sends nothing; see [Going live](#going-live-flipping-the-policy).
 
 You can also just ask the assistant: "set up an observing plan for 3C48 and
 3C147" or "what's observable at dec 40 right now?".
@@ -218,6 +300,11 @@ periodic injection health-checks, and ticks the *armed* observing plan.
 - Run the standing executor on one always-on machine:
   `python -m dsa_operator.monitor.supervisor` (or the systemd unit). It holds
   the lease as session `supervisor`.
+- **You don't need that standing process just to run an observation from your
+  laptop.** The web console has its own **autopilot**: while your console holds
+  the lease and a plan is armed, it drives the bring-up itself (see
+  [Observing plans](#observing-plans)). The two never both act — only whoever
+  holds the single lease does.
 
 From the web tab you can see status and force a monitor refresh; the mutating
 loops stay gated unless the supervisor session holds the lease.
@@ -260,7 +347,9 @@ Closing the lid is fine. When you reopen it:
 | `etcd3` import error (protobuf) | upstream packaging quirk | prefix commands with `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` |
 | "You no longer hold the executor lease" banner | laptop slept / someone took over | re-acquire the lease (Control tab) |
 | Chat says "denied" for control | you don't hold the lease, or agents are locked out | acquire the lease (Control tab); check dashboard authority |
-| Action returns "shadow" | not promoted / mode is shadow | this is expected until you graduate it (see above) |
+| Action returns "shadow" | not promoted / mode is shadow | expected until you go live — see [Going live](#going-live-flipping-the-policy) |
+| Armed a plan but nothing moves | mode is shadow (dry-run), or you don't hold the lease | check the `mode` + `control` status-bar pills; go live and acquire the lease. Click **Advance bring-up** (Plan tab) to see the exact stage/blocker. |
+| "system_state stuck at ready, safe_to_arm=false" | pipeline not started yet | the bring-up runs `start_fleet` then waits for warm-up; in shadow it never really starts — go live |
 | Agent won't act at all | e-stop engaged or dashboard lockout | resume the e-stop; check the dsa110-rt authority panel |
 | `corr_fast` stalls after ~N blocks | missing fstable → `meridian_fringestop` crash → buffers back up | build + deploy the fstable for the current dec; restart fleet |
 | Injections not detected | noise EMA not converged / wrong apply-at | check warm-up convergence and `apply_at_specnum` |
