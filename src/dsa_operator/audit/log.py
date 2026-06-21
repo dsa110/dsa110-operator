@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,12 +113,19 @@ class AuditLog:
         *,
         slack: Optional["SlackNotifierProto"] = None,
         etcd_sink: Optional[Any] = None,
+        ring_size: int = 500,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._slack = slack
         self._etcd_sink = etcd_sink
         self._lock = threading.Lock()
+        # In-memory ring of the most recent records (the redacted JSON payloads,
+        # oldest-first). The durable JSONL on disk is the system of record; this
+        # ring is a fast, always-available feed for the live UI so a failure
+        # (denied / execute failed / a shadow no-op in live mode) is never
+        # silent — no disk scan, no etcd round-trip.
+        self._recent: deque[dict[str, Any]] = deque(maxlen=max(1, ring_size))
 
     def _path_for(self, ts: float) -> Path:
         day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
@@ -129,6 +137,7 @@ class AuditLog:
         line = json.dumps(payload, separators=(",", ":"), default=str)
         path = self._path_for(rec.ts)
         with self._lock:
+            self._recent.append(payload)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
                 f.flush()
@@ -170,6 +179,25 @@ class AuditLog:
                 if len(out) >= n:
                     return list(reversed(out))
         return list(reversed(out))
+
+    def recent(self, n: int = 50, *, kind: Optional[str] = None,
+               failures_only: bool = False,
+               newest_first: bool = True) -> list[dict[str, Any]]:
+        """Most recent records from the in-memory ring (no disk I/O).
+
+        Filters by ``kind`` (e.g. ``"control"``) and/or ``failures_only``
+        (``ok == False``). Returns newest-first by default. Empty right after a
+        process restart (the ring only holds events since start); callers that
+        want durable history should fall back to :meth:`tail`.
+        """
+        with self._lock:
+            items = list(self._recent)
+        if kind is not None:
+            items = [r for r in items if r.get("kind") == kind]
+        if failures_only:
+            items = [r for r in items if not r.get("ok", True)]
+        items = items[-n:] if n and n > 0 else items
+        return list(reversed(items)) if newest_first else items
 
 
 class SlackNotifierProto:

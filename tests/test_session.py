@@ -1,6 +1,8 @@
 """Bring-up sequencer: state machine, per-DEC modes, arming, transits."""
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from dsa_operator.agent.control import AgentControl, ControlToolError
@@ -56,13 +58,31 @@ class FakeSite:
 
 @pytest.fixture()
 def engine(tmp_path):
+    # Pin shadow so these state-machine tests are independent of whatever
+    # mode the operator has the live config/policy.yaml set to.
     shared = _SharedStore()
     writer = OperatorEtcdWriter(FakeOperatorBackend())
     audit = AuditLog(tmp_path / "audit")
-    eng = ControlEngine(load_policy(), ExecutorLease(writer), ApprovalStore(),
+    policy = dataclasses.replace(load_policy(), mode="shadow")
+    eng = ControlEngine(policy, ExecutorLease(writer), ApprovalStore(),
                         audit, writer=writer)
     eng.lease.acquire(ACTOR, SID)
     eng._shared = shared            # stash for tests that want a plan store
+    return eng
+
+
+def _live_engine(tmp_path, *, observing=None):
+    """An engine in LIVE mode (so the sequencer gates on real state), with an
+    optional `observing:` policy block for the dec-ready arm override."""
+    shared = _SharedStore()
+    writer = OperatorEtcdWriter(FakeOperatorBackend())
+    audit = AuditLog(tmp_path / "audit")
+    policy = dataclasses.replace(load_policy(), mode="live",
+                                 observing=dict(observing or {}))
+    eng = ControlEngine(policy, ExecutorLease(writer), ApprovalStore(),
+                        audit, writer=writer)
+    eng.lease.acquire(ACTOR, SID)
+    eng._shared = shared
     return eng
 
 
@@ -138,6 +158,86 @@ def test_describe_lists_steps_and_modes(engine):
     assert "set_spectral_line" in joined
     assert "60000" in joined
     assert d["setup"] == {"spectral_line": {"subbands": [1]}}
+
+
+# -- dec-ready arm override (live) ------------------------------------------
+
+def test_warm_waits_without_override(tmp_path):
+    # Live, on target, fstable present, fleet "ready" (NOT prepared) and
+    # safe_to_arm false: with no override the bring-up stalls at WARM.
+    eng = _live_engine(tmp_path)
+    bu = BringUp(eng, FakeSite(dec=69.04, state="ready", fstable_ready=True,
+                               not_settled=2),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    _actions(bu)
+    assert bu.stage is Stage.WARM
+
+
+def test_warm_dec_ready_override_arms_when_not_safe(tmp_path):
+    # Same situation, but the override is enabled and only 2 dishes are moving
+    # (≤ 4): the sequencer arms despite safe_to_arm being false.
+    eng = _live_engine(tmp_path, observing={"arm_on_dec_ready": True,
+                                            "max_moving_antennas": 4})
+    bu = BringUp(eng, FakeSite(dec=69.04, state="ready", fstable_ready=True,
+                               not_settled=2),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    acts = _actions(bu)
+    assert bu.stage is Stage.DONE
+    assert acts == ["utc_start"]
+
+
+def test_warm_override_respects_max_moving(tmp_path):
+    # Too many dishes moving (5 > 4): the override does NOT fire; still waits.
+    eng = _live_engine(tmp_path, observing={"arm_on_dec_ready": True,
+                                            "max_moving_antennas": 4})
+    bu = BringUp(eng, FakeSite(dec=69.04, state="ready", fstable_ready=True,
+                               not_settled=5),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    _actions(bu)
+    assert bu.stage is Stage.WARM
+
+
+def test_settle_override_passes_with_few_moving(tmp_path):
+    # Off target -> a slew + SETTLE happens. With the override, settle passes
+    # while a few dishes (3 ≤ 4) are still moving instead of requiring zero.
+    eng = _live_engine(tmp_path, observing={"arm_on_dec_ready": True,
+                                            "max_moving_antennas": 4})
+    bu = BringUp(eng, FakeSite(dec=10.0, state="prepared", fstable_ready=True,
+                               not_settled=3),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    acts = _actions(bu)
+    assert "point_array" in acts and acts[-1] == "utc_start"
+    assert bu.stage is Stage.DONE
+
+
+def test_settle_waits_without_override(tmp_path):
+    eng = _live_engine(tmp_path)
+    bu = BringUp(eng, FakeSite(dec=10.0, state="prepared", fstable_ready=True,
+                               not_settled=3),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    _actions(bu)
+    assert bu.stage is Stage.SETTLE
+
+
+def test_override_inherited_from_policy_block(tmp_path):
+    # The flag can come purely from the policy `observing:` block (no BringUp
+    # kwargs), which is how the supervisor + console autopilot pick it up.
+    eng = _live_engine(tmp_path, observing={"arm_on_dec_ready": True})
+    bu = BringUp(eng, FakeSite(dec=69.04, state="ready", fstable_ready=True,
+                               not_settled=4),   # default max is 4
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    acts = _actions(bu)
+    assert bu.stage is Stage.DONE
+    assert acts == ["utc_start"]
+
+
+def test_describe_mentions_override_when_enabled(tmp_path):
+    eng = _live_engine(tmp_path, observing={"arm_on_dec_ready": True,
+                                            "max_moving_antennas": 4})
+    bu = BringUp(eng, FakeSite(dec=69.04, state="ready", fstable_ready=True),
+                 dec_deg=69.04, actor=ACTOR, session_id=SID)
+    joined = " | ".join(bu.describe()["steps"])
+    assert "dec-ready override" in joined
 
 
 # -- sequencer / arming -----------------------------------------------------

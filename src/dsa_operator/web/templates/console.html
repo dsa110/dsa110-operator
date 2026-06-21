@@ -29,6 +29,24 @@
     .dot.green{background:#4ade80;} .dot.amber{background:#fbbf24;}
     .dot.red{background:#f87171;} .dot.blue{background:#60a5fa;}
 
+    /* -- activity / failures feed -- */
+    #activitybar { background:#0c1116; border-bottom:1px solid var(--border);
+                   padding:6px 16px; font-size:12px; max-height:148px; overflow:auto; }
+    #activitybar .act-head { display:flex; align-items:center; gap:12px; color:var(--mut);
+                             position:sticky; top:0; background:#0c1116; padding-bottom:4px; }
+    .act-toggle { display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
+    .act-empty { color:var(--mut); font-style:italic; }
+    .act-more { margin-left:auto; }
+    .act-row { display:flex; gap:10px; align-items:baseline; padding:2px 0;
+               border-top:1px solid #161d26; font-family:ui-monospace, monospace; }
+    .act-row .t { color:var(--mut); white-space:nowrap; }
+    .act-row .a { font-weight:600; white-space:nowrap; }
+    .act-row .n { color:#cdd6df; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .act-row .tag { font-size:10px; padding:0 6px; border-radius:999px; border:1px solid var(--border); white-space:nowrap; }
+    .act-row.fail { color:#fca5a5; } .act-row.fail .a { color:#f87171; }
+    .act-row.shadow .tag { color:#fbbf24; border-color:#8a6d1f; }
+    .act-row.live .tag { color:#4ade80; border-color:#2f6b3a; }
+
     /* -- layout: tabs (left) + persistent chat (right) -- */
     .layout { display:flex; align-items:stretch; min-height: calc(100vh - 96px); }
     main.left { flex:1; min-width:0; }
@@ -90,7 +108,19 @@
     <span class="pill" id="sb-ant"><span class="dot"></span><span class="k">antennas</span> <b>…</b></span>
     <span class="pill" id="sb-dec"><span class="k">dec</span> <b>…</b></span>
     <span class="pill" id="sb-plan"><span class="dot"></span><span class="k">plan</span> <b>…</b></span>
+    <span class="pill" id="sb-bringup" title="Live bring-up stage from the autopilot (only while a plan is armed and this session holds the lease)"><span class="dot"></span><span class="k">bring-up</span> <b>…</b></span>
     <span class="pill" id="sb-lease"><span class="dot"></span><span class="k">control</span> <b>…</b></span>
+  </div>
+
+  <!-- ===================== ACTIVITY / FAILURES FEED ===================== -->
+  <div id="activitybar" title="Live feed of control actions and bring-up steps (auto-refreshes). Failures are highlighted.">
+    <div class="act-head">
+      <span class="k">activity</span>
+      <label class="act-toggle"><input type="checkbox" id="act-failonly" onchange="refreshActivity()" /> failures only</label>
+      <span id="act-empty" class="act-empty">no recent actions</span>
+      <button class="linkish act-more" onclick="load('/api/audit','mon');showTab('monitor')" title="Open the full durable audit log on the Monitor tab">full log →</button>
+    </div>
+    <div id="act-rows"></div>
   </div>
 
   <div class="layout">
@@ -285,6 +315,10 @@ async function planPost(url, target) {
 }
 
 // -- status bar --
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+}
 function setPill(id, cls, dotColor, html) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -332,12 +366,49 @@ async function refreshStatus() {
     else if (pl.armed) setPill("sb-plan", "ok", "green",
             `armed${pl.active_dec != null ? " · dec " + (+pl.active_dec).toFixed(2) + "°" : ""}`);
     else setPill("sb-plan", "warn", "amber", "staged (not armed)");
+    // bring-up (autopilot stage)
+    const bu = d.observing;
+    if (!bu || !bu.stage || bu.stage === "idle") setPill("sb-bringup", "", null, "idle");
+    else if (bu.blocked) setPill("sb-bringup", "alert", "red",
+            `BLOCKED @ ${bu.stage}` + (bu.reason ? ` — ${esc(bu.reason)}` : ""));
+    else if (bu.stage === "done" || bu.stage === "observing") setPill("sb-bringup", "ok", "green", esc(bu.stage));
+    else setPill("sb-bringup", "warn", "amber",
+            esc(bu.stage) + (bu.waiting ? " (waiting)" : "") + (bu.reason ? ` — ${esc(bu.reason)}` : ""));
     // lease / control
     const ls = d.lease || {};
     if (ls.you_hold_it) setPill("sb-lease", "ok", "green", "you hold it");
     else if (ls.holder) setPill("sb-lease", "", "blue", `held by ${ls.holder.actor}`);
     else setPill("sb-lease", "warn", "amber", "free");
   } catch (e) { /* leave pills as-is */ }
+}
+
+// -- activity / failures feed --
+function _fmtTime(ts) {
+  if (!ts) return "";
+  try { return new Date(ts * 1000).toLocaleTimeString(); } catch (e) { return ""; }
+}
+async function refreshActivity() {
+  const box = document.getElementById("act-rows");
+  const empty = document.getElementById("act-empty");
+  if (!box) return;
+  const failOnly = document.getElementById("act-failonly").checked;
+  try {
+    const j = await (await fetch("/api/activity?n=40" + (failOnly ? "&failures=1" : ""))).json();
+    const rows = j.data || [];
+    if (!rows.length) { box.innerHTML = ""; empty.style.display = ""; return; }
+    empty.style.display = "none";
+    box.innerHTML = rows.map(r => {
+      const ok = r.ok !== false;
+      const live = r.mode === "live";
+      const cls = "act-row" + (ok ? "" : " fail") + (live ? " live" : " shadow");
+      const tag = live ? "live" : "shadow";
+      const note = r.note || (r.result && r.result.plan) || "";
+      return `<div class="${cls}"><span class="t">${esc(_fmtTime(r.ts))}</span>`
+        + `<span class="tag">${tag}</span>`
+        + `<span class="a">${esc(r.action)}</span>`
+        + `<span class="n">${ok ? "" : "✗ "}${esc(note)}</span></div>`;
+    }).join("");
+  } catch (e) { /* leave as-is */ }
 }
 
 // -- lease --
@@ -537,7 +608,7 @@ async function ask(ev) {
 
 // Keep the lease + status live, and react quickly on wake / reconnect.
 let _lastSeen = Date.now();
-function refreshAll() { refreshLease(); refreshStatus(); }
+function refreshAll() { refreshLease(); refreshStatus(); refreshActivity(); }
 async function onWake() {
   const gap = Date.now() - _lastSeen;
   _lastSeen = Date.now();

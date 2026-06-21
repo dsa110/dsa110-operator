@@ -103,3 +103,49 @@ def test_deploy_fstable_rejects_pathy_filename():
 
     with pytest.raises(VerbError):
         _plan("deploy_fstable", {"filename": "../etc/passwd"})
+
+
+# -- dashboard responses must be checked (silent failures were the bug) ------
+
+def _executor_with(responder):
+    read = ReadOnlyEtcd(FakeEtcdReader({"/cnf/corr": {"antenna_order": ANTENNA_ORDER}}))
+    dash = FakeDashboardControl(responder=responder)
+    return LiveExecutor(dashboard=dash, control_etcd=FakeControlEtcd(),
+                        read_etcd=read), dash
+
+
+def test_dashboard_404_raises_not_silent():
+    """A POST to a route the dashboard doesn't expose must fail, not be
+    reported as executed (this was the 'armed plan does nothing' bug)."""
+    ex, _ = _executor_with(lambda p, f: {"status_code": 404, "ok": False,
+                                         "text": "Not Found"})
+    with pytest.raises(ExecutorError) as exc:
+        ex.execute(_plan("start_fleet", {"dec_deg": 16.27}), actor="a")
+    assert "404" in str(exc.value)
+
+
+def test_dashboard_app_level_refusal_raises():
+    """HTTP 200 but {"ok": false} (e.g. utc_start with no captures answering)
+    must surface as a failure, not a success."""
+    ex, _ = _executor_with(lambda p, f: {
+        "status_code": 200, "ok": True,
+        "json": {"ok": False, "error": "no captures answering — refusing to "
+                                       "broadcast a blind utc_start"}})
+    with pytest.raises(ExecutorError) as exc:
+        ex.execute(_plan("utc_start", {"margin": 60000}), actor="a")
+    assert "no captures answering" in str(exc.value)
+
+
+def test_dashboard_5xx_raises():
+    ex, _ = _executor_with(lambda p, f: {"status_code": 500, "ok": False,
+                                         "text": "boom"})
+    with pytest.raises(ExecutorError):
+        ex.execute(_plan("utc_stop", {}), actor="a")
+
+
+def test_dashboard_success_with_ok_true_passes():
+    ex, dash = _executor_with(lambda p, f: {"status_code": 200, "ok": True,
+                                            "json": {"ok": True, "val": 12345}})
+    res = ex.execute(_plan("utc_start", {"margin": 60000}), actor="a")
+    assert res["results"][0]["result"]["json"]["val"] == 12345
+    assert dash.posts[0][0] == "/control/utc_start"

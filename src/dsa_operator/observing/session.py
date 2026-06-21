@@ -198,6 +198,13 @@ class BringUp:
     settle_timeout_s: float = 240.0
     fstable_timeout_s: float = 1800.0
     warm_timeout_s: float = 600.0
+    # Relaxed arm-readiness override. When enabled, the SETTLE and WARM waits
+    # also pass if the DEC/pointing service reports the array on target and at
+    # most `max_moving_antennas` dishes are still slewing — even when the
+    # dashboard's `safe_to_arm` is still false. `None` => inherit from
+    # `policy.observing` (arm_on_dec_ready / max_moving_antennas).
+    arm_on_dec_ready: Optional[bool] = None
+    max_moving_antennas: Optional[int] = None
     now: Any = time.time
 
     stage: Stage = field(default=Stage.INIT, init=False)
@@ -223,6 +230,39 @@ class BringUp:
     def _need_point(self) -> bool:
         cur = self.site.commanded_dec()
         return cur is None or abs(cur - self.dec_deg) > self.dec_tol_deg
+
+    # -- relaxed arm-readiness override --------------------------------------
+    def _obs_policy(self) -> dict[str, Any]:
+        return getattr(self.engine.policy, "observing", {}) or {}
+
+    @property
+    def _arm_on_dec_ready(self) -> bool:
+        if self.arm_on_dec_ready is not None:
+            return self.arm_on_dec_ready
+        return bool(self._obs_policy().get("arm_on_dec_ready", False))
+
+    @property
+    def _max_moving(self) -> int:
+        if self.max_moving_antennas is not None:
+            return self.max_moving_antennas
+        try:
+            return int(self._obs_policy().get("max_moving_antennas", 4))
+        except (TypeError, ValueError):
+            return 4
+
+    def _dec_ready_to_arm(self) -> bool:
+        """Relaxed readiness: the DEC/pointing service reports we're on target
+        and at most ``_max_moving`` antennas are still slewing. Lets an operator
+        arm when the dashboard's ``safe_to_arm`` is being conservative (e.g. a
+        couple of dishes still settling) even though the array is fine. Fails
+        closed if the DEC service is silent or the moving count is unknown."""
+        cur = self.site.commanded_dec()
+        if cur is None or abs(cur - self.dec_deg) > self.dec_tol_deg:
+            return False                 # DEC service silent or not on target
+        n = self.site.n_not_settled()
+        if n is None:
+            return False                 # can't confirm how many are moving
+        return n <= self._max_moving
 
     def _evaluate(self, action: str, params: dict[str, Any]) -> Decision:
         return self.engine.evaluate(action, params, actor=self.actor,
@@ -272,7 +312,12 @@ class BringUp:
             steps.append(f"restart_all (running as {state}; re-read new dec/fstable)")
         else:
             steps.append(f"fleet already running ({state}); no restart")
-        steps.append("wait until warmed (system_state → prepared / safe_to_arm)")
+        if self._arm_on_dec_ready:
+            steps.append("wait until warmed (system_state → prepared / safe_to_arm)"
+                         f", OR dec-ready override (on target & ≤ {self._max_moving} "
+                         "antennas moving)")
+        else:
+            steps.append("wait until warmed (system_state → prepared / safe_to_arm)")
         steps.append(f"utc_start (arm, margin/holdoff = {self.holdoff})")
         return {"dec_deg": self.dec_deg, "el_deg": round(el, 3),
                 "holdoff": self.holdoff, "mode": self.engine.policy.mode,
@@ -331,6 +376,10 @@ class BringUp:
         n = self.site.n_not_settled()
         if n == 0:
             return self._advance(_next_after_settle(self), "dishes settled")
+        if self._arm_on_dec_ready and n is not None and n <= self._max_moving:
+            return self._advance(
+                _next_after_settle(self),
+                f"settle relaxed ({n} moving ≤ {self._max_moving}; dec-ready)")
         if self._deadline is None:
             self._arm_deadline(self.settle_timeout_s)
         if self._expired():
@@ -413,6 +462,12 @@ class BringUp:
             return self._advance(Stage.DONE, "already observing")
         if st.get("safe_to_arm") or state == "prepared":
             return self._advance(Stage.ARM, "warmed; safe to arm")
+        if self._arm_on_dec_ready and self._dec_ready_to_arm():
+            n = self.site.n_not_settled()
+            return self._advance(
+                Stage.ARM,
+                f"arming on dec-ready override (on target, {n} moving "
+                f"≤ {self._max_moving}; safe_to_arm={st.get('safe_to_arm')})")
         if self._deadline is None:
             self._arm_deadline(self.warm_timeout_s)
         if self._expired():

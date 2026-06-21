@@ -67,6 +67,8 @@ def test_two_person_and_ttl(policy_path):
 
 def test_real_policy_file_loads():
     pol = load_policy()  # the repo's config/policy.yaml
-    assert pol.mode == "shadow"
+    # mode is operator-controlled (shadow during commissioning, live in
+    # production) — assert it's valid rather than hardcoding one choice.
+    assert pol.mode in ("shadow", "live")
     assert pol.gate_for("update_fleet_code") == GATE_APPROVAL
     assert pol.needs_two_person("set_policy")

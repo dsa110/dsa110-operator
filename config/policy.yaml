@@ -17,7 +17,7 @@
 # ships in shadow; graduate per-action as each is validated.
 
 version: 3
-mode: shadow            # shadow | live   (Phase 0/2 default: shadow)
+mode: live            # shadow | live   (Phase 0/2 default: shadow)
 
 # Global kill switch. When paused, ALL mutating tools fail closed; reads
 # and Q&A continue. The web console and a CLI can flip this.
@@ -137,6 +137,20 @@ autonomy:
     rfi_flag_fraction_alert: 0.7  # alert if max per-node RFI flag fraction exceeds
     sefd_max_jy: 5000          # warn if median SEFD exceeds this (Jy)
     injection_verify_after_s: 180  # wait this long before checking a probe landed
+
+# Observing bring-up readiness. The sequencer normally arms recording only
+# once the dashboard's system_state reports `prepared` / `safe_to_arm`. On a
+# healthy array that flag can stay false for a while (e.g. a couple of dishes
+# still settling after a slew), which stalls the bring-up at the WARM stage.
+#
+# `arm_on_dec_ready` adds a second, operator-controlled path to arm: if the
+# DEC/pointing service reports the array ON TARGET and at most
+# `max_moving_antennas` dishes are still moving, the sequencer proceeds to
+# utc_start even when safe_to_arm is still false. This only affects LIVE mode
+# (in shadow nothing is sent regardless) and still runs the full gate engine.
+observing:
+  arm_on_dec_ready: true        # arm on dec-ready even if safe_to_arm is false
+  max_moving_antennas: 4        # ...provided at most this many dishes are moving
 
 # Pointing safety envelope (correctness, not safety — antennas are safe by
 # design). Commands outside this elevation range are refused by the tool

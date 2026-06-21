@@ -45,6 +45,36 @@ def test_tail_returns_recent_in_order(tmp_path):
     assert [r["action"] for r in tail] == ["act2", "act3", "act4"]
 
 
+def test_recent_returns_newest_first_from_ring(tmp_path):
+    log = AuditLog(tmp_path)
+    for i in range(5):
+        log.read(f"act{i}", actor="bob")
+    recent = log.recent(3)
+    assert [r["action"] for r in recent] == ["act4", "act3", "act2"]
+
+
+def test_recent_failures_only_and_kind_filter(tmp_path):
+    log = AuditLog(tmp_path)
+    log.record(AuditRecord(action="utc_start", kind="control", ok=True,
+                           mode="live", note="executed"))
+    log.record(AuditRecord(action="utc_start", kind="control", ok=False,
+                           mode="live", note="execute failed: HTTP 404"))
+    log.read("get_mon", actor="bob", ok=False)         # a failed read
+    fails = log.recent(10, failures_only=True)
+    assert [r["action"] for r in fails] == ["get_mon", "utc_start"]
+    ctl_fails = log.recent(10, kind="control", failures_only=True)
+    assert len(ctl_fails) == 1
+    assert "404" in ctl_fails[0]["note"]
+
+
+def test_recent_ring_is_bounded(tmp_path):
+    log = AuditLog(tmp_path, ring_size=3)
+    for i in range(6):
+        log.read(f"act{i}", actor="bob")
+    recent = log.recent(50)
+    assert [r["action"] for r in recent] == ["act5", "act4", "act3"]
+
+
 def test_slack_disabled_is_noop_and_filters_reads():
     n = SlackNotifier(webhook_url=None)
     assert not n.enabled

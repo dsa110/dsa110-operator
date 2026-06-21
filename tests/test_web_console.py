@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import pytest
 
 from dsa_operator.agent.stub import StubAgent
-from dsa_operator.audit.log import AuditLog
+from dsa_operator.audit.log import AuditLog, AuditRecord
 from dsa_operator.control.approvals import ApprovalStore
 from dsa_operator.control.engine import ControlEngine
 from dsa_operator.control.lease import ExecutorLease
@@ -155,12 +155,45 @@ def test_status_endpoint_rollup(client):
     j = client.get("/api/status").get_json()
     assert j["ok"] is True
     d = j["data"]
-    assert d["mode"] == "shadow"
+    assert d["mode"] in ("shadow", "live")   # operator-controlled
     assert d["paused"] is False
     assert d["system_state"]["state"] == "OBSERVING"
     assert d["pointing"]["target_dec_deg"] == 54.5
     assert d["pointing"]["n_not_settled"] == 0     # /mon/ant/1 drv_state=2 == settled
     assert "lease" in d and "plan" in d
+
+
+def test_status_includes_observing_field(client):
+    """The status roll-up carries the live bring-up state (None until the
+    autopilot has run a tick), so the UI can show a BLOCKED/waiting pill."""
+    d = client.get("/api/status").get_json()["data"]
+    assert "observing" in d
+
+
+def test_activity_feed_returns_recent_actions_newest_first(client, app):
+    # generate a couple of audited reads, then a control failure row
+    client.get("/api/fleet")
+    client.get("/api/pointing")
+    app._audit.record(AuditRecord(
+        action="utc_start", kind="control", actor="alice", ok=False,
+        mode="live", note="dashboard POST /control/utc_start refused: "
+                          "no captures answering"))
+    j = client.get("/api/activity?n=10").get_json()
+    assert j["ok"] is True
+    rows = j["data"]
+    assert rows[0]["action"] == "utc_start"        # newest first
+    assert rows[0]["ok"] is False
+
+
+def test_activity_feed_failures_only(client, app):
+    client.get("/api/fleet")                        # ok read
+    app._audit.record(AuditRecord(action="utc_start", kind="control",
+                                  actor="alice", ok=False, mode="live",
+                                  note="execute failed: HTTP 404"))
+    rows = client.get("/api/activity?failures=1").get_json()["data"]
+    assert rows
+    assert all(r["ok"] is False for r in rows)
+    assert rows[0]["action"] == "utc_start"
 
 
 def test_mon_rejects_out_of_scope_key(client):

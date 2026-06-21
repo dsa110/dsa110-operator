@@ -277,6 +277,9 @@ def create_app(
                 out["plan"] = None
         except Exception:                                  # noqa: BLE001
             out["plan"] = None
+        # Live bring-up state from the autopilot (stage + any blocker), so an
+        # armed plan that is waiting or stuck is visible at a glance.
+        out["observing"] = getattr(app, "_last_observing", None)
         return jsonify({"ok": True, "data": out})
 
     # -- read-only API --------------------------------------------------------
@@ -306,6 +309,28 @@ def create_app(
         tools = _tools_for_request()
         n = request.args.get("n", default=50, type=int)
         return jsonify({"ok": True, "data": tools.get_audit_log(n)})
+
+    @app.route("/api/activity")
+    def api_activity():
+        """Live action/execution feed for the console, newest-first, straight
+        from the in-memory audit ring (no disk scan). Use ?failures=1 to show
+        only failures, ?n= to cap, ?kind= to filter (e.g. control). Falls back
+        to the durable on-disk tail right after a process restart when the ring
+        is still empty, so failures are never invisible."""
+        require_user()
+        n = request.args.get("n", default=40, type=int)
+        failures_only = request.args.get("failures", "").lower() in (
+            "1", "true", "yes", "on")
+        kind = request.args.get("kind") or None
+        rows = audit.recent(n, kind=kind, failures_only=failures_only)
+        if not rows:                                       # cold process: disk
+            rows = list(reversed(audit.tail(max(n, 50))))
+            if kind is not None:
+                rows = [r for r in rows if r.get("kind") == kind]
+            if failures_only:
+                rows = [r for r in rows if not r.get("ok", True)]
+            rows = rows[:n]
+        return jsonify({"ok": True, "data": rows})
 
     @app.route("/api/mon")
     def api_mon():
@@ -698,7 +723,7 @@ def create_app(
             ObservingSequencer, ToolsSiteState)
         cfg = AutonomyConfig.from_policy(control.policy)
         period = max(5.0, float(cfg.plan_s))
-        st: dict[str, Any] = {"sid": None, "seq": None}
+        st: dict[str, Any] = {"sid": None, "seq": None, "last_block": None}
         while not stop.wait(period):
             try:
                 if not control.lease.mine():
@@ -720,10 +745,38 @@ def create_app(
                         ToolsSiteState(tools_factory(holder.actor)),
                         actor=holder.actor, session_id=holder.session_id)
                 res = st["seq"].apply()
-                step = (res.to_json() or {}).get("step") or {}
+                rj = res.to_json() or {}
+                step = rj.get("step") or {}
+                # Expose the live bring-up state for the status bar / activity
+                # feed so an armed plan that is waiting or blocked is visible in
+                # the UI, not just buried in the server log.
+                app._last_observing = {                    # type: ignore[attr-defined]
+                    "ts": time.time(), "stage": res.stage,
+                    "reason": step.get("detail") or res.reason or "",
+                    "blocked": bool(step.get("blocked")),
+                    "waiting": bool(step.get("waiting")),
+                    "action": step.get("action"),
+                    "dec_deg": rj.get("dec_deg"),
+                }
                 if step.get("action") or step.get("blocked"):
                     LOG.info("observing autopilot: stage=%s — %s",
                              res.stage, step.get("detail", res.reason))
+                # A bring-up block (timeout, missing setup, a denied/failed
+                # action) is a real operational failure. Control actions are
+                # already audited by the engine, but sequencer-level blocks are
+                # not — record them (de-duped) so they land in the failures feed.
+                if step.get("blocked"):
+                    reason = step.get("detail") or res.reason or "blocked"
+                    key = f"{res.stage}:{reason}"
+                    if key != st.get("last_block"):
+                        st["last_block"] = key
+                        audit.record(AuditRecord(
+                            action="observing_bringup", kind="observing",
+                            actor=holder.actor, ok=False, mode=control.policy.mode,
+                            params={"stage": res.stage, "dec_deg": rj.get("dec_deg")},
+                            note=f"bring-up blocked at {res.stage}: {reason}"))
+                else:
+                    st["last_block"] = None
             except Exception:                              # noqa: BLE001
                 LOG.exception("observing autopilot tick failed (continuing)")
 

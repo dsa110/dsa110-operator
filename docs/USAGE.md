@@ -191,6 +191,88 @@ a human. Editing `config/policy.yaml` itself is the `set_policy` action: it is
 edits the policy), so changing `mode`/thresholds is always a deliberate manual
 edit, never something the agent can do for you.
 
+## Setting up the laptop and h23
+
+There are two places the operator runs, each from **its own clone** of this
+repo. They share state through `h23`'s etcd (the lease, the armed plan, the
+audit trail), but they read their **own local files** for configuration.
+
+### Which config files matter, and where
+
+| File | Tracked by git? | Scope | What it controls |
+| --- | --- | --- | --- |
+| `config/policy.yaml` | **yes** (committed) | the same on every clone after a `git pull` | global `mode: shadow\|live`, the gate for each action, the `observing` arm-on-dec-ready override, and the `autonomy:` loop switches |
+| `config/local.yaml` | **no** (git-ignored) | **per-machine** — exists independently on the laptop and on h23 | the `promote:` list: which actions are allowed to execute for real (vs dry-run) on *that* machine |
+
+**The key point:** because `config/local.yaml` is git-ignored, it does **not**
+travel with `git pull`. Each machine needs its own copy. If h23 has no
+`config/local.yaml` (or an empty `promote:`), then **every** action the h23
+supervisor runs is a **shadow dry-run** even with `mode: live` — an armed plan
+handed off to h23 will "run" but move nothing. This is a common cause of
+"schedules don't do anything on h23". Create the file on **both** machines.
+
+> Do I edit both `policy.yaml` *and* `local.yaml` on both machines?
+> - **`policy.yaml`:** edit it **once**, commit, and `git pull` on the other
+>   machine. You don't maintain two different copies — both clones should be on
+>   the same commit so they enforce the same gates/mode. (It's read from each
+>   clone's own working tree, so the pull is what syncs it.)
+> - **`local.yaml`:** **yes — create/maintain it on each machine**, because
+>   it's git-ignored. Keep the `promote:` lists identical on the laptop and h23
+>   so an observation behaves the same whoever holds the lease.
+
+### Laptop (the console + assistant)
+
+1. Clone the repo and install the runtime deps into your env (a conda env is
+   typical): `pip install etcd3 pyyaml requests anthropic`.
+2. Put secrets in `scripts/.env` (or `~/.config/dsa110-operator/secrets.env`):
+   `ANTHROPIC_API_KEY=...` (for the real assistant) and optionally
+   `DSA_OPERATOR_SLACK_WEBHOOK_URL=...`.
+3. Create `config/local.yaml` with the actions you've validated (see
+   [Going live](#going-live-flipping-the-policy) for the recommended list).
+4. Confirm `ssh h23` works non-interactively (passwordless key + `~/.ssh/config`
+   `Host h23` entry).
+5. Start it: `scripts/laptop.sh`. This opens the self-healing SSH tunnel
+   (etcd + dashboard) and serves the console at <http://127.0.0.1:8787>. The
+   laptop reaches etcd/dashboard **through the tunnel** (loopback ports), which
+   the defaults already assume.
+   - To run it as a managed service instead: `scripts/install_service.sh laptop
+     --enable` (installs the tunnel + web units).
+
+### h23 (the standing executor)
+
+This is the always-on process that keeps an armed plan running after you walk
+away. Run **at most one** across the whole site.
+
+1. Clone the repo on h23 and install the deps into the env you'll run it from:
+   `pip install etcd3 pyyaml requests` (no Anthropic key needed — the
+   supervisor is deterministic, non-LLM).
+2. `git pull` so h23 has the **same `config/policy.yaml`** as your laptop
+   (same `mode`, gates, autonomy switches).
+3. **Create `config/local.yaml` on h23** with the **same `promote:` list** as
+   the laptop. *(This is the easy step to forget — without it h23 dry-runs
+   everything.)*
+4. Install + start the service: `scripts/install_service.sh h23 --enable`, then
+   `loginctl enable-linger "$USER"` so it survives logout. On h23 it talks to
+   etcd and the dashboard **directly** (no tunnel) — the systemd unit bakes in
+   `DSA_OPERATOR_ETCD_HOST=etcdv3service.pro.pvt` and
+   `DSA_OPERATOR_DASHBOARD_PORT=5778`.
+5. Verify: `systemctl --user status dsa110-operator-supervisor-h23` and watch
+   its audit at `~/.local/share/dsa110-operator/audit/`.
+
+The supervisor starts **monitor-only** if your laptop currently holds the
+lease, and **reclaims the lease automatically** the moment you release it (or
+your laptop sleeps), continuing the same armed plan — see
+[Handing a running schedule off to h23](#handing-a-running-schedule-off-to-h23).
+
+### One-time go-live checklist (both machines)
+
+- [ ] `config/policy.yaml` → `mode: live` (committed + pulled on both)
+- [ ] `config/local.yaml` exists on **the laptop** with the bring-up actions promoted
+- [ ] `config/local.yaml` exists on **h23** with the **same** promote list
+- [ ] both clones on the same git commit
+- [ ] laptop console restarted / h23 service restarted so they re-read policy
+- [ ] status-bar `mode` pill reads **LIVE**; run one action and confirm it shows a green `live` row (not yellow `shadow`) in the Activity feed
+
 ## Observing plans
 
 DSA-110 is a meridian-transit instrument, so a plan is a timed schedule of
@@ -258,6 +340,32 @@ How it works:
 To change or stop a running sequence, just say so (the assistant disarms /
 clears the plan), or use the dashboard kill switches in
 [§ kill switches](#stopping-things-kill-switches).
+
+#### Arming when safe_to_arm stays false
+
+The warm step normally waits for the dashboard to report `system_state` →
+`prepared` / `safe_to_arm`. On a healthy array that flag can stay `false` for a
+while — e.g. a couple of dishes are still settling after a slew — which stalls
+the bring-up at the **warm** stage until it eventually times out.
+
+To handle that, the sequencer has an **operator-controlled override** in
+`config/policy.yaml`:
+
+```yaml
+observing:
+  arm_on_dec_ready: true     # arm even if safe_to_arm is false, provided...
+  max_moving_antennas: 4     # ...the array is on target and ≤ this many move
+```
+
+When `arm_on_dec_ready` is on, both the **settle** and **warm** waits also pass
+if the DEC/pointing service reports the array **on target** and **at most
+`max_moving_antennas` dishes are still moving** — so the bring-up proceeds to
+`utc_start` instead of stalling. It fails closed (does *not* override) if the
+DEC service is silent, the array isn't on target, or the moving count is
+unknown. This only matters in **live** mode (in shadow nothing is sent
+regardless), it still runs the full gate engine, and both the console autopilot
+and the h23 supervisor honour it (they read the same policy). Set
+`arm_on_dec_ready: false` to require the dashboard's `safe_to_arm` again.
 
 ### Per-DEC modes (spectral line, and beyond)
 
@@ -343,12 +451,52 @@ loops stay gated unless the supervisor session holds the lease.
   independently by a `dsart_rt` watchdog, so even a runaway agent can't keep
   recording past it.
 
-## Where the logs are
+## Seeing what happened (and what failed)
 
-Everything is recorded three ways: an append-only local JSONL audit file (the
-system of record, under `DSA_OPERATOR_AUDIT_ROOT`), the shared etcd audit
-trail, and — if configured — a Slack summary. Every line carries the operator
-name that initiated it.
+Failures are **never silent**. There are four places to look, from glanceable
+to forensic:
+
+1. **The Activity feed** (the strip directly under the status bar, always
+   visible). It auto-refreshes every ~7 s and lists the most recent control
+   actions and bring-up steps, newest first. Each row shows the time, a
+   `live`/`shadow` tag, the action, and the outcome note. **Failures are red**
+   and prefixed `✗` (e.g. `utc_start ✗ dashboard POST /control/utc_start
+   refused: no captures answering`). Tick **failures only** to filter to just
+   the problems. This reads an in-memory ring, so it's instant and always up
+   to date.
+
+2. **The bring-up pill** in the status bar shows the autopilot's live stage
+   while a plan is armed and you hold the lease: `point`, `warm (waiting)`,
+   `arm`, `done`, or a red **`BLOCKED @ <stage> — <reason>`** when the
+   sequence stops. This is the fastest way to see *why* an armed plan isn't
+   progressing.
+
+3. **Advance bring-up** (Plan tab) steps the sequence by hand and returns the
+   exact stage, decision, and blocker for the current step — use it to probe
+   interactively.
+
+4. **The durable audit log** — the system of record. Every action is recorded
+   three ways: an append-only local JSONL file (under
+   `DSA_OPERATOR_AUDIT_ROOT`, default `audit_log/audit-YYYYMMDD.jsonl`), the
+   shared etcd audit trail, and — if configured — a Slack summary. Every line
+   carries the operator name, the `mode` (`live`/`shadow`), `ok` true/false,
+   and a `note`. View recent rows in the **Monitor → Audit** view (or the
+   **full log →** link on the Activity strip), or tail the file directly.
+
+> **Why a plan could "complete" with nothing happening — now caught.** A live
+> control action is only real if it is **promoted** *and* the dashboard
+> actually accepts it. Two cases used to pass silently and now surface as
+> explicit rows in the feed:
+>
+> - **Shadow no-op in live mode** — an action that isn't in your
+>   `config/local.yaml` `promote:` list runs as a dry-run even when
+>   `mode: live`. It appears with a yellow `shadow` tag and a note like
+>   `policy mode=live but 'restart_all' is not promoted; shadow only`.
+> - **Dashboard refusal / wrong route** — the executor now checks the
+>   dashboard's HTTP status and JSON `ok` flag. A 404 (route not exposed), a
+>   5xx, or an app-level refusal (HTTP 200 `{ok:false}`, e.g. `utc_start` with
+>   no captures answering) is recorded as a **failure** and **blocks the
+>   bring-up** with the real reason, instead of advancing as if it worked.
 
 ## After your laptop sleeps
 
@@ -372,8 +520,10 @@ Closing the lid is fine. When you reopen it:
 | "You no longer hold the executor lease" banner | laptop slept / someone took over | re-acquire the lease (Control tab) |
 | Chat says "denied" for control | you don't hold the lease, or agents are locked out | acquire the lease (Control tab); check dashboard authority |
 | Action returns "shadow" | not promoted / mode is shadow | expected until you go live — see [Going live](#going-live-flipping-the-policy) |
-| Armed a plan but nothing moves | mode is shadow (dry-run), or you don't hold the lease | check the `mode` + `control` status-bar pills; go live and acquire the lease. Click **Advance bring-up** (Plan tab) to see the exact stage/blocker. |
-| "system_state stuck at ready, safe_to_arm=false" | pipeline not started yet | the bring-up runs `start_fleet` then waits for warm-up; in shadow it never really starts — go live |
+| Armed a plan but nothing moves | mode is shadow (dry-run), you don't hold the lease, or actions aren't promoted | check the `mode` + `control` + `bring-up` status-bar pills and the **Activity feed** (failures are red). Go live, acquire the lease, and promote the bring-up actions. Click **Advance bring-up** (Plan tab) to see the exact stage/blocker. |
+| Plan runs on h23 but moves nothing | h23 has no `config/local.yaml` → everything is a shadow no-op | create `config/local.yaml` on h23 with the same `promote:` list as the laptop; the Activity feed shows yellow `shadow` rows when this happens — see [Setting up the laptop and h23](#setting-up-the-laptop-and-h23) |
+| Activity feed shows `✗ … refused: no captures answering` | the dashboard declined `utc_start` because the fleet isn't actually capturing | the pipeline isn't started/warm — bring the fleet up first; the bring-up now blocks here instead of silently "completing" |
+| "system_state stuck at ready, safe_to_arm=false" | pipeline not started yet, or a few dishes still settling | the bring-up runs `start_fleet` then waits for warm-up; in shadow it never really starts — go live. If the array is healthy but `safe_to_arm` stays false (e.g. a couple of dishes settling), the **dec-ready override** arms anyway once on target with ≤ `max_moving_antennas` moving — see [Arming when safe_to_arm stays false](#arming-when-safe_to_arm-stays-false) |
 | Agent won't act at all | e-stop engaged or dashboard lockout | resume the e-stop; check the dsa110-rt authority panel |
 | `corr_fast` stalls after ~N blocks | missing fstable → `meridian_fringestop` crash → buffers back up | build + deploy the fstable for the current dec; restart fleet |
 | Injections not detected | noise EMA not converged / wrong apply-at | check warm-up convergence and `apply_at_specnum` |

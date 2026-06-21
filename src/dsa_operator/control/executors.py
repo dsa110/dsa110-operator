@@ -49,6 +49,48 @@ class ExecutorError(RuntimeError):
     pass
 
 
+def _check_dashboard_result(target: str, result: Any) -> None:
+    """Raise unless the dashboard actually *accepted* the command.
+
+    The dsa_monitor ``/control/`` routes answer a form POST with an HTTP
+    status **and** a JSON body carrying their own ``ok`` flag. Three distinct
+    failures all mean *nothing happened on the array*:
+
+    * a wrong/absent route -> HTTP 404 (only start/stop/utc_start/utc_stop and
+      a handful of others are actually exposed),
+    * a server-side error -> HTTP 5xx,
+    * an application-level refusal -> HTTP 200 but ``{"ok": false, "error": …}``
+      (e.g. ``utc_start`` with no captures answering, or ``stop`` without the
+      ``confirm`` token).
+
+    Previously the executor ignored all of these and reported success, so the
+    bring-up sequencer advanced as though the fleet had come up while the POST
+    had in fact 404'd or been refused — an armed plan "completed" with zero
+    real effect. Fail loudly instead: the engine then audits a failure and the
+    sequencer blocks with the real reason.
+    """
+    if not isinstance(result, dict):
+        return
+    code = result.get("status_code")
+    if isinstance(code, int) and not (200 <= code < 300):
+        body = result.get("json")
+        detail = ""
+        if isinstance(body, dict):
+            detail = str(body.get("error") or body.get("message") or "")
+        if not detail:
+            detail = str(result.get("text") or "")[:300]
+        hint = ("  (route not exposed on the dsa_monitor dashboard?)"
+                if code == 404 else "")
+        raise ExecutorError(
+            f"dashboard POST {target} returned HTTP {code}"
+            + (f": {detail}" if detail else "") + hint)
+    body = result.get("json")
+    if isinstance(body, dict) and body.get("ok") is False:
+        raise ExecutorError(
+            f"dashboard POST {target} refused: "
+            + str(body.get("error") or body.get("message") or body))
+
+
 # --- direct etcd control writer (antenna pointing only) --------------------
 
 def _check_control_key(key: str) -> None:
@@ -127,13 +169,25 @@ class DashboardControlClient:
 
 
 class FakeDashboardControl:
-    """Records form POSTs for tests."""
+    """Records form POSTs for tests.
 
-    def __init__(self) -> None:
+    ``responder`` (optional) lets a test simulate the real dashboard's reply
+    for a given path — e.g. a 404 for an unexposed route or an
+    ``{"ok": false}`` refusal — so the executor's result-checking can be
+    exercised. It receives ``(path, form)`` and returns the result dict; if it
+    returns ``None`` the default 200/ok reply is used.
+    """
+
+    def __init__(self, responder: Optional[Any] = None) -> None:
         self.posts: list[tuple[str, dict[str, Any]]] = []
+        self._responder = responder
 
     def post(self, path: str, form: dict[str, Any]) -> dict[str, Any]:
         self.posts.append((path, dict(form)))
+        if self._responder is not None:
+            resp = self._responder(path, dict(form))
+            if resp is not None:
+                return resp
         return {"status_code": 200, "ok": True}
 
 
@@ -160,8 +214,10 @@ class LiveExecutor:
         if step.kind == "dashboard_post":
             form = dict(step.payload)
             form.setdefault("user", actor)
+            result = self._dash.post(step.target, form)
+            _check_dashboard_result(step.target, result)
             return {"kind": "dashboard_post", "target": step.target,
-                    "result": self._dash.post(step.target, form)}
+                    "result": result}
         if step.kind == "etcd_put":
             return self._etcd_put(step, actor)
         raise ExecutorError(

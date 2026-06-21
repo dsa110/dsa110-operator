@@ -141,7 +141,7 @@ def test_policy_endpoint_lists_gates(ctx):
     c = app.test_client()
     _login(c)
     data = c.get("/api/policy").get_json()["data"]
-    assert data["mode"] == "shadow"
+    assert data["mode"] in ("shadow", "live")   # operator-controlled
     assert data["actions"]["update_fleet_code"]["gate"] == "approval"
     assert data["actions"]["set_policy"]["two_person"] is True
 
