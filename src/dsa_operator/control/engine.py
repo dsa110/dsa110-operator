@@ -111,6 +111,12 @@ class ControlEngine:
         self._live = live_executor        # None ⇒ live impossible in this build
         self._now = now
 
+    @property
+    def has_live_executor(self) -> bool:
+        """True when a live executor is wired (so promoted+live actions can
+        actually mutate observatory state). False ⇒ everything is shadow."""
+        return self._live is not None
+
     # -- dashboard authority (human override the agent cannot clear) ----------
     def authority(self) -> Authority:
         return read_authority(self._read)

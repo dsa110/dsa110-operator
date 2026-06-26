@@ -95,15 +95,54 @@ class Policy:
         return str(self.actions.get(action, {}).get("note", ""))
 
 
-def load_promotions(path: Optional[str | Path] = None) -> frozenset[str]:
-    """Read the optional ``config/local.yaml`` ``promote:`` list."""
+class PolicyConfigError(ValueError):
+    """A policy / local-override config file is present but invalid.
+
+    We fail **loud** with an actionable message rather than (a) letting an
+    opaque ``yaml.ParserError`` traceback escape from deep in startup, or
+    (b) silently falling back to an empty promote list — which in ``live``
+    mode would turn *every* action into a dry-run, the exact silent failure
+    that makes "the telescope never starts" so hard to diagnose.
+    """
+
+
+def _load_yaml_file(p: Path) -> Any:
+    """``yaml.safe_load`` a file, re-raising parse errors as a clear,
+    file-attributed :class:`PolicyConfigError`."""
     import yaml
 
+    try:
+        return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise PolicyConfigError(f"{p} is not valid YAML: {exc}") from exc
+
+
+def load_promotions(path: Optional[str | Path] = None) -> frozenset[str]:
+    """Read the optional ``config/local.yaml`` ``promote:`` list.
+
+    A missing file means "nothing promoted" (the safe default). A file that
+    exists but is malformed raises :class:`PolicyConfigError` — we never
+    silently swallow it into an empty list.
+    """
     p = Path(path) if path is not None else _DEFAULT_LOCAL_PATH
     if not p.exists():
         return frozenset()
-    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return frozenset(raw.get("promote", []) or [])
+    raw = _load_yaml_file(p)
+    if not isinstance(raw, dict):
+        raise PolicyConfigError(
+            f"{p}: expected a YAML mapping with a 'promote:' key, got "
+            f"{type(raw).__name__}."
+        )
+    promote = raw.get("promote", []) or []
+    if isinstance(promote, str) or not isinstance(promote, (list, tuple, set)):
+        raise PolicyConfigError(
+            f"{p}: 'promote' must be a YAML block list of action names, e.g.\n"
+            "  promote:\n    - point_array\n    - utc_start\n"
+            "Do NOT write 'promote: []' on its own line above the items — that "
+            "hard-codes an EMPTY list and orphans the items below it (invalid "
+            f"YAML). Got: {promote!r}"
+        )
+    return frozenset(str(a).strip() for a in promote if str(a).strip())
 
 
 def load_policy(
@@ -111,29 +150,41 @@ def load_policy(
     *,
     local_path: Optional[str | Path] = None,
 ) -> Policy:
-    import yaml
-
     p = Path(path) if path is not None else _DEFAULT_POLICY_PATH
-    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    raw = _load_yaml_file(p)
     approval = raw.get("approval", {}) or {}
+    actions = dict(raw.get("actions", {}) or {})
+    promoted = load_promotions(local_path)
+
+    # Catch typos like ``utc_strat`` early: a promoted name that is not a real
+    # control action will silently never take effect, so warn loudly.
+    unknown = sorted(promoted - set(actions))
+    if unknown:
+        LOG.warning(
+            "config/local.yaml promotes unknown action(s) %s — not in the "
+            "policy's actions, so they have NO effect (typo?).",
+            ", ".join(unknown),
+        )
+
     return Policy(
         version=int(raw.get("version", 0)),
         mode=str(raw.get("mode", "shadow")),
         paused=bool(raw.get("paused", False)),
         read_only=frozenset(raw.get("read_only", []) or []),
-        actions=dict(raw.get("actions", {}) or {}),
+        actions=actions,
         pointing=dict(raw.get("pointing", {}) or {}),
         autonomy=dict(raw.get("autonomy", {}) or {}),
         observing=dict(raw.get("observing", {}) or {}),
         approval_ttl_s=int(approval.get("ttl_seconds", 300)),
         two_person=frozenset(approval.get("two_person", []) or []),
-        promoted=load_promotions(local_path),
+        promoted=promoted,
         raw=raw,
     )
 
 
 __all__ = [
     "Policy",
+    "PolicyConfigError",
     "load_policy",
     "load_promotions",
     "GATE_AUTONOMOUS",

@@ -269,7 +269,21 @@ class BringUp:
                                     session_id=self.session_id)
 
     def _ok(self, decision: Decision) -> bool:
-        return decision.outcome in (Outcome.EXECUTED, Outcome.SHADOW)
+        if decision.outcome is Outcome.EXECUTED:
+            return True
+        if decision.outcome is Outcome.SHADOW:
+            # SHADOW is the expected "success" only when we are genuinely
+            # previewing: shadow mode, OR a build with no live executor wired
+            # at all (degraded/test). But when a real live executor IS attached
+            # and mode is live, a SHADOW means the action was not promoted —
+            # nothing physical happened. Block loudly (e.g. "restart_all →
+            # shadow: ...not promoted") instead of marching on to DONE as if the
+            # array had moved. This is the fix for "armed plan completes but the
+            # telescope never starts".
+            if self._shadow:
+                return True
+            return not self.engine.has_live_executor
+        return False
 
     def _arm_deadline(self, secs: float) -> None:
         self._deadline = self.now() + secs

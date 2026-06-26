@@ -41,6 +41,16 @@ if [[ -z "${VIRTUAL_ENV:-}" && -z "${CONDA_PREFIX:-}" && -d .venv ]]; then
 fi
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+# Fast, offline config preflight: catches the classic "armed plan does nothing"
+# causes (mode not live, a bring-up action not promoted, or a malformed
+# config/local.yaml) BEFORE the console starts. Non-fatal — it only warns. Run
+# `python -m dsa_operator.preflight` (no --no-etcd) once the tunnel is up for
+# the live lease / e-stop / authority checks too.
+echo "==> preflight (config) ..."
+"$PY" -m dsa_operator.preflight --no-etcd || \
+  echo "    NOTE: preflight reported config blockers above — fix them or the" \
+       "console will only DRY-RUN. Starting anyway."
+
 # Persist a session-cookie secret so browser sessions survive console restarts.
 if [[ -z "${DSA_OPERATOR_SECRET_KEY:-}" ]]; then
   secret_file="${HOME}/.config/dsa110-operator/secret_key"

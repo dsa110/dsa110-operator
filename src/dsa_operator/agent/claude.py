@@ -55,6 +55,19 @@ class ClaudeAgent:
         tool_schemas = tool_schema_json(include_control=control_enabled)
         prompt = system_prompt(control_enabled=control_enabled)
 
+        # Inject a fresh situational snapshot so the agent starts the turn with
+        # eyes open (mode / lease / e-stop / plan / unpromoted actions) instead
+        # of blind until it happens to call a tool. Best-effort; never fatal.
+        if control_enabled and hasattr(control, "situation_snapshot"):
+            try:
+                snap = control.situation_snapshot()
+            except Exception:                                  # noqa: BLE001
+                snap = ""
+            if snap:
+                prompt = (prompt + "\n\nLIVE SITUATION (auto-captured this "
+                          "turn — trust these over your assumptions; still "
+                          "call tools for details):\n" + snap)
+
         for _ in range(MAX_TOOL_ITERS):
             resp = self._client.messages.create(
                 model=self.model,

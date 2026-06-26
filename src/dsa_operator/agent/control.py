@@ -78,16 +78,41 @@ class AgentControl:
 
     # -- introspection --------------------------------------------------------
     def list_control_actions(self) -> dict[str, Any]:
-        """Every control action with its active gate, so the agent knows
-        what it can do autonomously vs what needs human approval."""
+        """Every control action with its active gate AND whether it will
+        actually execute live (promoted + mode=live) vs shadow-no-op.
+
+        ``gate`` answers "is a human approval needed?"; ``will_execute_live``
+        answers "if I run this now, does anything physically happen?" — the
+        two are orthogonal, and confusing them is the #1 reason an armed plan
+        looks like it ran while nothing moved.
+        """
+        pol = self._engine.policy
+        live = pol.mode == "live"
         out = {}
-        for action in sorted(self._engine.policy.actions):
+        for action in sorted(pol.actions):
+            promoted = action in pol.promoted
             out[action] = {
-                "gate": self._engine.policy.gate_for(action),
-                "reversible": self._engine.policy.is_reversible(action),
-                "note": self._engine.policy.action_note(action),
+                "gate": pol.gate_for(action),
+                "reversible": pol.is_reversible(action),
+                "promoted": promoted,
+                "will_execute_live": bool(live and promoted
+                                          and self._engine.has_live_executor),
+                "note": pol.action_note(action),
             }
-        return {"mode": self._engine.policy.mode, "actions": out}
+        return {"mode": pol.mode, "promoted": sorted(pol.promoted),
+                "actions": out}
+
+    def preflight(self) -> dict[str, Any]:
+        """Can the telescope actually start RIGHT NOW from this session, and if
+        not, exactly what blocks it? Checks mode=live, the executor lease, the
+        e-stop, the dashboard lockout/pin, a wired live executor, and that each
+        bring-up action (point_array/build_fstable/deploy_fstable/start_fleet/
+        restart_all/utc_start) is promoted. CALL THIS before arming a plan and
+        whenever the user asks why nothing is happening — report any blockers
+        verbatim instead of guessing."""
+        from dsa_operator.control.preflight import observing_preflight
+        return observing_preflight(self._engine, session_id=self.session_id,
+                                   plan_store=self._plans)
 
     def lease_status(self) -> dict[str, Any]:
         holder = self._engine.lease.holder()
@@ -100,6 +125,74 @@ class AgentControl:
                           "executor_email": auth.executor_email,
                           "max_obs_seconds": auth.max_obs_seconds},
         }
+
+    def situation_snapshot(self) -> str:
+        """A compact, auto-captured view of the live control situation, injected
+        into the agent prompt each turn so it is never blind: mode, lease, the
+        e-stop / dashboard authority, the array/system state, the active plan,
+        and any unpromoted bring-up actions. Best-effort and exception-safe."""
+        pol = self._engine.policy
+        lines: list[str] = [f"- policy mode: {pol.mode}"
+                            + ("" if pol.mode == "live"
+                               else "  (SHADOW — every control action is a DRY "
+                                    "RUN; nothing physical happens)")]
+        try:
+            holder = self._engine.lease.holder()
+            if holder is None:
+                lines.append("- executor lease: FREE — you do NOT hold it; "
+                             "control calls are denied until it is acquired")
+            elif holder.session_id == self.session_id:
+                lines.append(f"- executor lease: HELD BY YOU ({self.actor})")
+            else:
+                lines.append(f"- executor lease: held by {holder.actor} (NOT "
+                             "you) — control calls are denied")
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            if self._engine.is_paused():
+                lines.append("- e-stop: ENGAGED — all control denied")
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            auth = self._engine.authority()
+            if not auth.agents_enabled:
+                lines.append("- dashboard authority: agents LOCKED OUT")
+            if auth.executor_email:
+                lines.append(f"- dashboard executor pin: {auth.executor_email}")
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            site = self._site()
+            fs = site.fleet_state()
+            lines.append(
+                f"- array: commanded dec={site.commanded_dec()}, "
+                f"system_state={fs.get('state')}, "
+                f"safe_to_arm={fs.get('safe_to_arm')}, "
+                f"antennas_not_settled={site.n_not_settled()}")
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            plan = self._plans.get()
+            if plan is None:
+                lines.append("- observing plan: none staged")
+            else:
+                state = "ARMED" if plan.armed else "STAGED (not armed)"
+                lines.append(
+                    f"- observing plan: {state}, {len(plan.segments)} "
+                    f"segment(s), dec_now={plan.dec_at(self._now())}")
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            from dsa_operator.control.preflight import CRITICAL_BRINGUP
+            missing = [a for a in CRITICAL_BRINGUP
+                       if a in pol.actions and a not in pol.promoted]
+            if pol.mode == "live" and missing:
+                lines.append("- WARNING: mode=live but these bring-up actions "
+                             "are NOT promoted (they will shadow no-op): "
+                             + ", ".join(missing))
+        except Exception:                                      # noqa: BLE001
+            pass
+        return "\n".join(lines)
 
     # -- the unified control entry point --------------------------------------
     def propose_action(self, action: str, params: Optional[dict[str, Any]] = None
@@ -388,6 +481,14 @@ CONTROL_TOOL_SPECS: list[ControlToolSpec] = [
         "Who holds the executor lease, whether THIS session holds it, "
         "the e-stop state, and the dashboard authority.",
         lambda c, a: c.lease_status()),
+    ControlToolSpec(
+        "preflight",
+        "Readiness check: can the telescope actually START right now from this "
+        "session, and if not exactly what blocks it (mode!=live, lease not "
+        "held, e-stop, dashboard lockout/pin, an action not promoted -> shadow "
+        "no-op). Call BEFORE arming and whenever asked 'why is nothing "
+        "happening?'; report the blockers verbatim.",
+        lambda c, a: c.preflight()),
     ControlToolSpec(
         "propose_action",
         "Run a control action through the gate engine. Returns the decision: "

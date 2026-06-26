@@ -176,6 +176,36 @@ dry-run. You need `mode: live` **and** the action promoted.
    active mode and promotions. Watch the audit log + Slack as the first real
    actions execute.
 
+### Preflight: "can it actually start right now?"
+
+Before arming a plan — or any time an armed plan seems to do nothing — run the
+**preflight** check. It validates every precondition the bring-up depends on
+(mode, the executor lease, the e-stop, the dashboard lockout/pin, a wired live
+executor, and that each bring-up action is promoted) and prints a concrete
+blocker list with the fix for each.
+
+```bash
+# Fast, offline: validates config/policy.yaml + config/local.yaml only.
+python -m dsa_operator.preflight --no-etcd
+
+# Full check (run with the SSH tunnel up): also checks the live lease,
+# e-stop, and dashboard authority.
+python -m dsa_operator.preflight          #  --json for machine-readable output
+```
+
+`scripts/laptop.sh` runs the offline preflight automatically at startup, so a
+broken `config/local.yaml` or an empty `promote:` list is caught loudly instead
+of degrading every action to a silent dry-run. The assistant has the same check
+as a **`preflight`** tool and reports `ready_to_observe` plus the blockers; it
+also receives a per-turn *live situation* snapshot (mode/lease/e-stop/plan), so
+asking it "why is nothing happening?" gets a precise answer rather than a guess.
+
+> **In live mode the sequencer now refuses to fake success.** If a bring-up
+> step comes back `shadow` because it isn't promoted (with a real executor
+> wired), the sequencer **blocks** on that step — e.g. `restart_all → shadow:
+> ... not promoted` — instead of marching to `done` while the array never
+> moves. Preflight catches this before you arm.
+
 ### Reverting
 
 To go back to safe dry-runs, set `mode: shadow` in `config/policy.yaml` (or
@@ -270,6 +300,7 @@ your laptop sleeps), continuing the same armed plan — see
 - [ ] `config/local.yaml` exists on **the laptop** with the bring-up actions promoted
 - [ ] `config/local.yaml` exists on **h23** with the **same** promote list
 - [ ] both clones on the same git commit
+- [ ] `python -m dsa_operator.preflight --no-etcd` reports **READY** on both machines
 - [ ] laptop console restarted / h23 service restarted so they re-read policy
 - [ ] status-bar `mode` pill reads **LIVE**; run one action and confirm it shows a green `live` row (not yellow `shadow`) in the Activity feed
 
