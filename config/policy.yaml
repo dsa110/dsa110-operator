@@ -56,6 +56,7 @@ read_only:
   - get_inject_calibrations
   - transit_report
   - health_report
+  - get_health_history
   - describe_monitoring
 
 # ---------------------------------------------------------------------------

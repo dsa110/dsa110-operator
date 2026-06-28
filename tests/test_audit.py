@@ -75,6 +75,37 @@ def test_recent_ring_is_bounded(tmp_path):
     assert [r["action"] for r in recent] == ["act5", "act4", "act3"]
 
 
+def test_window_filters_by_time(tmp_path):
+    import time
+
+    log = AuditLog(tmp_path)
+    now = time.time()
+    # three records: 5h ago, 2h ago, 10min ago.
+    for dt, act in ((5 * 3600, "old"), (2 * 3600, "mid"), (600, "new")):
+        log.record(AuditRecord(action=act, kind="system", ts=now - dt))
+    # window of the last 3 hours catches only mid + new, oldest-first.
+    got = log.window(now - 3 * 3600, now)
+    assert [r["action"] for r in got] == ["mid", "new"]
+    # a tight 20-minute window catches only the newest.
+    assert [r["action"] for r in log.window(now - 1200, now)] == ["new"]
+    # default until = now.
+    assert [r["action"] for r in log.window(now - 6 * 3600)] == \
+        ["old", "mid", "new"]
+
+
+def test_window_survives_corrupt_lines(tmp_path):
+    import time
+
+    log = AuditLog(tmp_path)
+    now = time.time()
+    log.record(AuditRecord(action="good", kind="system", ts=now - 60))
+    # Append a junk line to today's file; window must skip it, not crash.
+    f = next(tmp_path.glob("audit-*.jsonl"))
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write("not json at all\n")
+    assert [r["action"] for r in log.window(now - 3600, now)] == ["good"]
+
+
 def test_slack_disabled_is_noop_and_filters_reads():
     n = SlackNotifier(webhook_url=None)
     assert not n.enabled

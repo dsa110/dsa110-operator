@@ -612,6 +612,161 @@ class ReadOnlyTools:
         return self._ok("health_report", {}, {
             "overall": overall_name, "sections": sections})
 
+    def get_health_history(self, hours: float = 6.0) -> dict[str, Any]:
+        """Time-windowed system health + injection recovery over the past
+        ``hours`` (default 6; usually <24), reconstructed from the durable
+        audit log — the right tool for "how has the system been over the past
+        X hours, including injection recovery?".
+
+        Summarises three durable signal streams the standing supervisor writes:
+          * health-state edges (``health_monitor``): the ok/warn/alert
+            transitions and which finding codes appeared (so a transient alert
+            that has since cleared is still visible);
+          * injection probes (``injection_health_check.fire`` / ``.verify``):
+            how many fired, how many were detected vs missed (search silently
+            broken) vs shadow-skipped, the detection rate, the last probe, and
+            every miss;
+          * control activity/failures: how many control actions ran and any
+            that failed.
+        Also attaches the CURRENT ``health_report`` rollup for "right now"
+        context. The window is clamped to (0, 168] hours."""
+        import datetime as _dt
+        import time as _time
+
+        params = {"hours": hours}
+        self._guard("get_health_history", params)
+        try:
+            hrs = float(hours)
+        except (TypeError, ValueError):
+            raise ToolError("hours must be a number")
+        hrs = max(0.1, min(hrs, 168.0))
+        now = _time.time()
+        since = now - hrs * 3600.0
+        records = self._audit.window(since, now)
+
+        def _iso(ts: Any) -> Optional[str]:
+            try:
+                return _dt.datetime.fromtimestamp(
+                    float(ts), tz=_dt.timezone.utc).isoformat()
+            except (TypeError, ValueError, OSError):
+                return None
+
+        rank = {"ok": 0, "warn": 1, "alert": 2}
+
+        # -- health-state edges ------------------------------------------------
+        timeline: list[dict[str, Any]] = []
+        worst_rank = 0
+        n_alert_edges = 0
+        alert_codes_seen: set[str] = set()
+        warn_codes_seen: set[str] = set()
+        for r in records:
+            if r.get("action") != "health_monitor":
+                continue
+            res = r.get("result") if isinstance(r.get("result"), dict) else {}
+            level = res.get("level") \
+                or (r.get("note", "") or "").replace("level=", "") or "ok"
+            findings = res.get("findings") if isinstance(res.get("findings"), list) else []
+            codes: set[str] = set()
+            for f in findings:
+                if not isinstance(f, dict):
+                    continue
+                code, flv = f.get("code"), f.get("level")
+                if not code or flv == "ok":
+                    continue
+                codes.add(code)
+                if flv == "alert":
+                    alert_codes_seen.add(code)
+                elif flv == "warn":
+                    warn_codes_seen.add(code)
+            if level == "alert":
+                n_alert_edges += 1
+            worst_rank = max(worst_rank, rank.get(level, 0))
+            timeline.append({"iso_ts": _iso(r.get("ts")), "level": level,
+                             "codes": sorted(codes)})
+        worst_level = next(k for k, v in rank.items() if v == worst_rank)
+
+        # -- injection recovery ------------------------------------------------
+        n_fired = 0
+        fired_by_outcome: dict[str, int] = {}
+        detected = missed = shadow_skipped = 0
+        last_probe: Optional[dict[str, Any]] = None
+        misses: list[dict[str, Any]] = []
+        for r in records:
+            act = r.get("action")
+            if act == "injection_health_check.fire":
+                n_fired += 1
+                note = r.get("note", "") or ""
+                outcome = (note.split("outcome=", 1)[1].strip()
+                           if "outcome=" in note else "unknown")
+                fired_by_outcome[outcome] = fired_by_outcome.get(outcome, 0) + 1
+            elif act == "injection_health_check.verify":
+                note = r.get("note", "") or ""
+                details = r.get("result") if isinstance(r.get("result"), dict) else {}
+                if "shadow-only" in note:
+                    result, shadow_skipped = "shadow", shadow_skipped + 1
+                elif r.get("ok", False):
+                    result, detected = "detected", detected + 1
+                else:
+                    result, missed = "missed", missed + 1
+                    misses.append({"iso_ts": _iso(r.get("ts")), "note": note,
+                                   "details": details})
+                last_probe = {"iso_ts": _iso(r.get("ts")), "result": result,
+                              "note": note, "details": details}
+        denom = detected + missed
+        detection_rate = round(detected / denom, 3) if denom else None
+
+        # -- control activity / failures (injection + health summarised above) -
+        n_control = n_failures = 0
+        recent_failures: list[dict[str, Any]] = []
+        for r in records:
+            act = r.get("action", "")
+            if r.get("kind") == "control":
+                n_control += 1
+            if act == "health_monitor" or str(act).startswith("injection_health_check"):
+                continue
+            if not r.get("ok", True):
+                n_failures += 1
+                if len(recent_failures) < 10:
+                    recent_failures.append({
+                        "iso_ts": _iso(r.get("ts")), "action": act,
+                        "kind": r.get("kind"), "note": r.get("note", "")})
+
+        try:
+            current = self.health_report()
+        except Exception as exc:                           # noqa: BLE001
+            current = {"error": str(exc)}
+
+        result = {
+            "window_hours": hrs,
+            "since_utc": _iso(since), "now_utc": _iso(now),
+            "n_audit_records": len(records),
+            "current_health": current,
+            "health": {
+                "worst_level": worst_level,
+                "n_state_edges": len(timeline),
+                "n_alert_edges": n_alert_edges,
+                "alert_codes_seen": sorted(alert_codes_seen),
+                "warn_codes_seen": sorted(warn_codes_seen),
+                "timeline": timeline[-50:],
+            },
+            "injection_recovery": {
+                "n_fired": n_fired,
+                "fired_by_outcome": fired_by_outcome,
+                "n_verified": detected + missed + shadow_skipped,
+                "detected": detected, "missed": missed,
+                "shadow_skipped": shadow_skipped,
+                "detection_rate": detection_rate,
+                "last_probe": last_probe,
+                "misses": misses[-10:],
+            },
+            "control_activity": {
+                "n_control_actions": n_control,
+                "n_failures": n_failures,
+                "recent_failures": recent_failures,
+            },
+        }
+        return self._ok("get_health_history", params, result)
+
     def describe_monitoring(self) -> dict[str, Any]:
         """Discovery: the full set of things you can ask about, the tool that
         answers each, and the underlying signal. Use this to answer 'what can
@@ -651,6 +806,11 @@ class ReadOnlyTools:
             "rollup": {
                 "tools": ["health_report"],
                 "signals": "one ok/warn/alert report card across all of the above"},
+            "history": {
+                "tools": ["get_health_history", "get_audit_log"],
+                "signals": "health ok/warn/alert transitions + finding codes, "
+                           "injection probes fired/detected/missed + detection "
+                           "rate, control failures over a past-N-hours window"},
         }
         return self._ok("describe_monitoring", {}, catalog)
 

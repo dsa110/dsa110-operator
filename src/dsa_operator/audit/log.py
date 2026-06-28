@@ -180,6 +180,47 @@ class AuditLog:
                     return list(reversed(out))
         return list(reversed(out))
 
+    def window(self, since_ts: float,
+               until_ts: Optional[float] = None) -> list[dict[str, Any]]:
+        """All durable records with ``since_ts <= ts <= until_ts`` (oldest-first).
+
+        Scans only the UTC day files that overlap the range, so a short
+        look-back stays cheap even with months of history on disk. Unlike
+        :meth:`recent` (an in-memory ring that empties on restart) this reads
+        the JSONL system-of-record, so it survives a process restart — the
+        right source for "what happened over the past N hours?".
+        """
+        since = float(since_ts)
+        until = time.time() if until_ts is None else float(until_ts)
+        out: list[dict[str, Any]] = []
+        for path in sorted(self.root.glob("audit-*.jsonl")):
+            # Skip whole files that can't overlap the window (by filename day).
+            try:
+                day = datetime.strptime(
+                    path.stem.replace("audit-", ""), "%Y%m%d"
+                ).replace(tzinfo=timezone.utc)
+                day_start = day.timestamp()
+                if day_start + 86400.0 < since or day_start > until:
+                    continue
+            except ValueError:
+                pass  # unparseable name: scan it to be safe
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for ln in lines:
+                if not ln.strip():
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except ValueError:
+                    continue
+                ts = rec.get("ts")
+                if isinstance(ts, (int, float)) and since <= ts <= until:
+                    out.append(rec)
+        out.sort(key=lambda r: r.get("ts", 0.0))
+        return out
+
     def recent(self, n: int = 50, *, kind: Optional[str] = None,
                failures_only: bool = False,
                newest_first: bool = True) -> list[dict[str, Any]]:

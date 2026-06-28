@@ -180,6 +180,94 @@ def test_health_report_rolls_up_overall(tmp_path):
     assert out["overall"] == "alert"
 
 
+def test_get_health_history_aggregates_audit_window(tmp_path):
+    import time
+
+    from dsa_operator.audit.log import AuditRecord
+
+    t = _tools(tmp_path)
+    now = time.time()
+
+    def rec(**kw):
+        kw.setdefault("kind", "system")
+        t._audit.record(AuditRecord(**kw))
+
+    # Health edges: warn at 4h ago, alert at 3h ago, back to ok at 1h ago.
+    rec(action="health_monitor", ok=True, note="level=warn", ts=now - 4 * 3600,
+        result={"level": "warn", "findings": [
+            {"level": "warn", "code": "sky_stale", "message": "x"}]})
+    rec(action="health_monitor", ok=False, note="level=alert", ts=now - 3 * 3600,
+        result={"level": "alert", "findings": [
+            {"level": "alert", "code": "corr_nodes_down", "message": "x"}]})
+    rec(action="health_monitor", ok=True, note="level=ok", ts=now - 3600,
+        result={"level": "ok", "findings": []})
+
+    # Injection probes: one detected, one missed, one shadow-skipped.
+    rec(action="injection_health_check.fire", ok=True, mode="live",
+        note="outcome=executed", ts=now - 5 * 3600)
+    rec(action="injection_health_check.verify", ok=True,
+        note="injection probe detected", ts=now - 5 * 3600 + 180,
+        result={"baseline_matches": 2, "matches_after": 3})
+    rec(action="injection_health_check.fire", ok=True, mode="live",
+        note="outcome=executed", ts=now - 2 * 3600)
+    rec(action="injection_health_check.verify", ok=False,
+        note="injection probe NOT detected within 180s — search may be impaired",
+        ts=now - 2 * 3600 + 180,
+        result={"baseline_matches": 5, "matches_after": 5})
+    rec(action="injection_health_check.fire", ok=True, mode="shadow",
+        note="outcome=shadow", ts=now - 1800)
+    rec(action="injection_health_check.verify", ok=True,
+        note="probe was shadow-only (not sent); skipping detection check",
+        ts=now - 1800 + 180, result={"outcome": "shadow"})
+
+    # A control failure in-window (must not double-count the injection miss).
+    rec(action="utc_start", kind="control", ok=False, mode="live",
+        note="execute failed: HTTP 404", ts=now - 90 * 60)
+
+    # Something OUTSIDE the 6h window must be ignored.
+    rec(action="health_monitor", ok=False, note="level=alert", ts=now - 20 * 3600,
+        result={"level": "alert", "findings": [
+            {"level": "alert", "code": "ancient", "message": "x"}]})
+
+    out = t.get_health_history(6)
+
+    assert out["window_hours"] == 6.0
+    h = out["health"]
+    assert h["worst_level"] == "alert"
+    assert h["n_state_edges"] == 3                     # the 20h-ago one excluded
+    assert h["n_alert_edges"] == 1
+    assert "corr_nodes_down" in h["alert_codes_seen"]
+    assert "ancient" not in h["alert_codes_seen"]
+    assert "sky_stale" in h["warn_codes_seen"]
+
+    inj = out["injection_recovery"]
+    assert inj["n_fired"] == 3
+    assert inj["fired_by_outcome"] == {"executed": 2, "shadow": 1}
+    assert inj["detected"] == 1 and inj["missed"] == 1 and inj["shadow_skipped"] == 1
+    assert inj["detection_rate"] == 0.5               # 1 / (1 + 1)
+    assert inj["last_probe"]["result"] == "shadow"
+    assert len(inj["misses"]) == 1
+    assert inj["misses"][0]["details"]["matches_after"] == 5
+
+    ctl = out["control_activity"]
+    assert ctl["n_control_actions"] == 1
+    assert ctl["n_failures"] == 1                      # only utc_start, not the miss
+    assert ctl["recent_failures"][0]["action"] == "utc_start"
+
+
+def test_get_health_history_validates_and_clamps(tmp_path):
+    t = _tools(tmp_path)
+    with pytest.raises(ToolError):
+        t.get_health_history("not-a-number")
+    # Out-of-range hours are clamped, not rejected.
+    assert t.get_health_history(9999)["window_hours"] == 168.0
+    assert t.get_health_history(0)["window_hours"] == 0.1
+    # Registered as a real read-only tool and audited.
+    from dsa_operator.agent.base import TOOL_SPECS_BY_NAME
+    assert "get_health_history" in TOOL_SPECS_BY_NAME
+    assert any(r["action"] == "get_health_history" for r in t._audit.tail(10))
+
+
 def test_describe_monitoring_lists_real_tools(tmp_path):
     from dsa_operator.agent.base import TOOL_SPECS_BY_NAME
     t = _tools(tmp_path)

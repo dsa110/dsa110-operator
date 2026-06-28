@@ -100,6 +100,14 @@ READONLY_TOOL_SPECS: list[ToolSpec] = [
              "across fleet, pointing, capture/drops, buffers, RFI, search, "
              "SEFD, injections, candidates, sky, dumps.",
              lambda t, a: t.health_report()),
+    ToolSpec("get_health_history", "Time-windowed health + injection-recovery "
+             "summary over the past N hours (default 6, usually <24): health "
+             "ok/warn/alert state transitions and finding codes, injection "
+             "probes fired/detected/missed with detection rate and every miss, "
+             "and control failures — plus the CURRENT rollup. Use for 'describe "
+             "system health over the past X hr, including injection recovery'.",
+             lambda t, a: t.get_health_history(float(a.get("hours", 6.0))),
+             {"hours": "look-back window in hours (optional, default 6)"}),
     ToolSpec("get_capture_health", "UDP capture health across corr nodes: "
              "writing?, kernel drops, degraded streams, data rate.",
              lambda t, a: t.get_capture_health()),
