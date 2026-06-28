@@ -314,6 +314,52 @@ def maintain_lease(lease: Any, actor: str, session_id: str) -> str:
     return "acquired" if lease.acquire(actor, session_id) else "monitor_only"
 
 
+def clear_stale_plan(plan_store: Any, audit: Any = None, *,
+                     actor: str = "supervisor", reason: str = "startup") -> Any:
+    """Delete any pre-existing observing plan at startup.
+
+    A plan persists in etcd across restarts; if a (possibly armed) one is left
+    over, the standing supervisor — once it holds the lease — would run its
+    bring-up on the first tick and slew the array to that plan's declination
+    with no human in the loop. Wiping it on startup guarantees a clean slate:
+    nothing moves until a human stages and arms a new plan.
+
+    Best-effort (never raises) and idempotent. Returns the cleared plan (or
+    ``None`` if there was nothing to clear) and records an audit row capturing
+    what was removed, so a wrongly-discarded plan is still recoverable from the
+    durable log.
+    """
+    try:
+        plan = plan_store.get()
+    except Exception:                                          # noqa: BLE001
+        LOG.exception("could not read plan while clearing on %s", reason)
+        plan = None
+    try:
+        plan_store.clear()
+    except Exception:                                          # noqa: BLE001
+        LOG.exception("failed to clear pre-existing plan on %s", reason)
+        return plan
+    if plan is None:
+        LOG.info("no pre-existing observing plan to clear on %s", reason)
+        return None
+    LOG.warning(
+        "cleared pre-existing observing plan on %s (armed=%s, %d segment(s), "
+        "armed_by=%s) so it cannot auto-run a bring-up",
+        reason, plan.armed, len(plan.segments), plan.armed_by)
+    if audit is not None:
+        try:
+            audit.record(AuditRecord(
+                action="clear_observing_plan", kind="system", actor=actor,
+                ok=True, mode="live",
+                note=f"cleared pre-existing plan on {reason}",
+                params={"armed": plan.armed, "armed_by": plan.armed_by,
+                        "n_segments": len(plan.segments),
+                        "labels": [s.label for s in plan.segments]}))
+        except Exception:                                      # noqa: BLE001
+            pass
+    return plan
+
+
 def main() -> int:  # pragma: no cover
     """Standing-executor entrypoint: ``python -m dsa_operator.monitor.supervisor``.
 
@@ -360,6 +406,11 @@ def main() -> int:  # pragma: no cover
                     h.actor if h else "?")
 
     plan_store = PlanStore(engine._writer, engine._read)  # type: ignore[attr-defined]
+    # Clean slate: discard any plan left in etcd from a previous session so a
+    # stale (possibly armed) plan can't auto-run a bring-up the moment we hold
+    # the lease. Nothing moves until a human stages + arms a fresh plan.
+    clear_stale_plan(plan_store, audit, actor=args.actor,
+                     reason="supervisor startup")
     # The sequencer runs the full bring-up (point -> fstable -> start/restart
     # -> warm -> arm) for each segment of an *armed* plan; staged-only plans
     # are ignored until a human confirms and arms them.
@@ -412,7 +463,7 @@ def main() -> int:  # pragma: no cover
 
 
 __all__ = ["AutonomyConfig", "SupervisorTick", "AutonomySupervisor",
-           "maintain_lease", "main"]
+           "maintain_lease", "clear_stale_plan", "main"]
 
 
 if __name__ == "__main__":  # pragma: no cover

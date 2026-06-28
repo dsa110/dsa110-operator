@@ -144,6 +144,7 @@ def create_app(
     secret_key: Optional[str] = None,
     lease_keepalive: bool = False,
     observing_autopilot: bool = False,
+    clear_plan_on_startup: bool = False,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.secret_key = (
@@ -169,6 +170,15 @@ def create_app(
         read_etcd = connect_readonly(host=_etcd_host(), port=_etcd_port())
     if plan_store is None:
         plan_store = PlanStore(control._writer, read_etcd)  # type: ignore[attr-defined]
+
+    # Clean slate on startup: discard any plan left in etcd from a previous
+    # session so a stale (possibly armed) plan can't be auto-run by the console
+    # autopilot once this session takes the lease. Off by default (so tests and
+    # embedders keep an injected plan); the laptop/console entrypoint enables it.
+    if clear_plan_on_startup:
+        from dsa_operator.monitor.supervisor import clear_stale_plan
+        clear_stale_plan(plan_store, audit, actor=operator_name,
+                         reason="console startup")
 
     # Autonomy supervisor (Phase 5). One app-level instance so its health /
     # alert state persists across ticks. Bound to the "supervisor" session:
@@ -795,7 +805,8 @@ def main() -> int:  # pragma: no cover
     from dsa_operator.env import load_secrets
     load_secrets()
     maybe_install_from_env()
-    app = create_app(lease_keepalive=True, observing_autopilot=True)
+    app = create_app(lease_keepalive=True, observing_autopilot=True,
+                     clear_plan_on_startup=True)
     host = os.environ.get("DSA_OPERATOR_BIND", "127.0.0.1")
     port = int(os.environ.get("DSA_OPERATOR_PORT", "8787"))
     app.run(host=host, port=port)

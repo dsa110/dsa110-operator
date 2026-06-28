@@ -263,3 +263,39 @@ def test_runner_executes_live_when_promoted(tmp_path):
                                   promote=["point_array"], mode="live")
     res = runner.apply(now=10)
     assert res.decision.outcome is Outcome.EXECUTED
+
+
+# -- startup plan clearing --------------------------------------------------
+
+def test_clear_stale_plan_removes_armed_plan_and_audits(tmp_path):
+    from dsa_operator.monitor.supervisor import clear_stale_plan
+
+    store = _SharedStore()
+    ps = PlanStore(store, store)
+    plan = ObservingPlan([Segment(0, 1e12, 16.27, "SPL DEC 16.27")]).validate()
+    plan.armed = True
+    plan.armed_by = "vikram"
+    ps.set(plan)
+    assert ps.get() is not None
+
+    audit = AuditLog(tmp_path)
+    cleared = clear_stale_plan(ps, audit, actor="supervisor", reason="test")
+
+    assert cleared is not None and cleared.armed is True
+    assert ps.get() is None                      # gone from etcd
+    recs = [r for r in audit.tail(10) if r["action"] == "clear_observing_plan"]
+    assert recs and recs[0]["params"]["armed"] is True
+    assert recs[0]["params"]["armed_by"] == "vikram"
+    assert recs[0]["params"]["labels"] == ["SPL DEC 16.27"]
+
+
+def test_clear_stale_plan_noop_when_empty(tmp_path):
+    from dsa_operator.monitor.supervisor import clear_stale_plan
+
+    store = _SharedStore()
+    ps = PlanStore(store, store)
+    audit = AuditLog(tmp_path)
+    assert clear_stale_plan(ps, audit) is None
+    assert ps.get() is None
+    assert not [r for r in audit.tail(10)
+                if r["action"] == "clear_observing_plan"]

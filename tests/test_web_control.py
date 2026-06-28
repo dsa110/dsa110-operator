@@ -62,6 +62,54 @@ def _login(client):
     return None
 
 
+def test_create_app_clears_stale_plan_on_startup(tmp_path):
+    from dsa_operator.observing.plan import ObservingPlan, PlanStore, Segment
+
+    audit = AuditLog(tmp_path / "audit")
+    writer = OperatorEtcdWriter(FakeOperatorBackend())
+    engine = ControlEngine(load_policy(), ExecutorLease(writer),
+                           ApprovalStore(), audit, writer=writer)
+    etcd = ReadOnlyEtcd(FakeEtcdReader({}))
+    dash = DashboardClient(getter=_dash_getter)
+    shared = _SharedStore()
+    ps = PlanStore(shared, shared)
+    plan = ObservingPlan([Segment(0, 1e12, 16.27, "stale")]).validate()
+    plan.armed = True
+    ps.set(plan)
+    assert ps.get() is not None
+
+    create_app(
+        operator="alice",
+        tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
+        agent=StubAgent(), audit=audit, control=engine,
+        read_etcd=etcd, plan_store=ps, secret_key="t",
+        clear_plan_on_startup=True,
+    )
+    assert ps.get() is None         # stale armed plan wiped at console startup
+
+
+def test_create_app_keeps_plan_when_clear_disabled(tmp_path):
+    from dsa_operator.observing.plan import ObservingPlan, PlanStore, Segment
+
+    audit = AuditLog(tmp_path / "audit")
+    writer = OperatorEtcdWriter(FakeOperatorBackend())
+    engine = ControlEngine(load_policy(), ExecutorLease(writer),
+                           ApprovalStore(), audit, writer=writer)
+    etcd = ReadOnlyEtcd(FakeEtcdReader({}))
+    dash = DashboardClient(getter=_dash_getter)
+    shared = _SharedStore()
+    ps = PlanStore(shared, shared)
+    ps.set(ObservingPlan([Segment(0, 1e12, 16.27, "keep")]).validate())
+
+    create_app(
+        operator="alice",
+        tools_factory=lambda a: ReadOnlyTools(etcd, dash, audit, actor=a),
+        agent=StubAgent(), audit=audit, control=engine,
+        read_etcd=etcd, plan_store=ps, secret_key="t",
+    )
+    assert ps.get() is not None     # default: injected plan preserved
+
+
 def test_control_denied_without_lease(ctx):
     app, _ = ctx
     c = app.test_client()
